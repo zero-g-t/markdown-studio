@@ -95,6 +95,24 @@ function htmlToPlainText(html) {
     .trim();
 }
 
+function formatDisplayPath(pathOrUrl) {
+  if (!pathOrUrl) {
+    return '';
+  }
+
+  try {
+    if (pathOrUrl.startsWith('file://')) {
+      const url = new URL(pathOrUrl);
+      const decodedPath = decodeURIComponent(url.pathname);
+      const windowsPath = decodedPath.replace(/^\/([A-Za-z]:)/, '$1').replaceAll('/', '\\');
+      return windowsPath;
+    }
+    return decodeURIComponent(pathOrUrl);
+  } catch {
+    return pathOrUrl;
+  }
+}
+
 function normalizeFileName(name) {
   const trimmed = name.trim();
   if (!trimmed) {
@@ -1316,7 +1334,13 @@ class MarkdownStudioApp {
     const path = this.root.querySelector('#filePath');
     const openContainingFolderButton = this.root.querySelector('#openContainingFolderButton');
     title.textContent = this.currentFile?.name || this.importedFile?.name || this.snapshotFile?.name || '未命名文档';
-    path.textContent = this.currentFile?.path || this.importedFile?.url || this.snapshotFile?.path || '选择文件夹后打开 Markdown 文件';
+    path.textContent = formatDisplayPath(
+      this.currentFile?.path ||
+      this.importedFile?.url ||
+      this.snapshotFile?.path ||
+      this.snapshotFile?.url ||
+      ''
+    ) || '选择文件夹后打开 Markdown 文件';
     openContainingFolderButton.hidden = !this.importedFile;
   }
 
