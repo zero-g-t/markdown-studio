@@ -227,13 +227,13 @@ class FileSystemModule {
     return 'showDirectoryPicker' in window;
   }
 
-  async pickDirectory() {
+  async pickDirectory(options = {}) {
     if (!this.isSupported()) {
       throw new Error('当前浏览器不支持 File System Access API，请在最新版 Chrome 或 Edge 中使用。');
     }
 
     this.rootHandle = await window.showDirectoryPicker({
-      id: 'markdown-studio-root',
+      id: options.id || 'markdown-studio-root',
       mode: 'readwrite'
     });
     await this.handleStore.setRootHandle(this.rootHandle);
@@ -905,10 +905,6 @@ class MarkdownStudioApp {
                   <i data-lucide="copy"></i>
                   <span>复制纯文本</span>
                 </button>
-                <button id="openContainingFolderButton" class="tool-button document-action" type="button" title="授权并加载当前文件所在文件夹" hidden>
-                  <i data-lucide="folder-open"></i>
-                  <span>打开所在文件夹</span>
-                </button>
               </div>
             </div>
             <div class="editor-preview">
@@ -945,7 +941,6 @@ class MarkdownStudioApp {
     this.root.querySelector('#saveButton').addEventListener('click', () => this.saveCurrentFile('manual'));
     this.root.querySelector('#newRootFileButton').addEventListener('click', () => this.createInRoot('file'));
     this.root.querySelector('#copyPlainTextButton').addEventListener('click', () => this.copyPlainText());
-    this.root.querySelector('#openContainingFolderButton').addEventListener('click', () => this.openImportedContainingFolder());
     this.root.querySelector('#decreaseFontButton').addEventListener('click', () => this.adjustFontSize(-1));
     this.root.querySelector('#increaseFontButton').addEventListener('click', () => this.adjustFontSize(1));
     this.root.querySelector('#fontSizeInput').addEventListener('change', (event) => {
@@ -1136,39 +1131,12 @@ class MarkdownStudioApp {
     this.persistDocumentSnapshot().catch((error) => console.warn('Failed to persist document snapshot', error));
   }
 
-  async openImportedContainingFolder() {
-    if (!this.importedFile?.name) {
-      return;
-    }
-    await this.openDirectory({ preferredFileName: this.importedFile.name });
-  }
-
   async openDirectory(options = {}) {
     try {
       await this.ensureSafeFileSwitch();
-      const preferredFileName = options.preferredFileName;
-      this.importedFile = null;
       this.setSaveStatus('saving', '正在读取目录');
-      this.currentTree = await this.fs.pickDirectory();
-      this.tree.setRoot(this.currentTree);
-      if (preferredFileName) {
-        const matchingFile = this.findRootFileByName(this.currentTree, preferredFileName) || this.findFileByName(this.currentTree, preferredFileName);
-        if (matchingFile) {
-          await this.openFile(matchingFile);
-          return;
-        }
-      }
-      this.currentFile = null;
-      this.snapshotFile = null;
-      this.lastSavedContent = '';
-      this.dirty = false;
-      this.editor.setContent('');
-      this.preview.render('');
-      this.outline.update('');
-      await this.preferences.save({ activePath: '', documentSnapshot: null });
-      this.setSaveStatus('idle', '请选择文件');
-      this.updateFileTitle();
-      renderIcons();
+      const tree = await this.fs.pickDirectory();
+      await this.applyPickedDirectory(tree, options);
     } catch (error) {
       if (error.name === 'AbortError') {
         this.setSaveStatus(this.currentFile ? 'saved' : 'idle', this.currentFile ? '已保存' : '未打开文件');
@@ -1179,6 +1147,39 @@ class MarkdownStudioApp {
       }
       this.showError(error);
     }
+  }
+
+  async applyPickedDirectory(tree, options = {}) {
+    const preferredFileName = options.preferredFileName;
+    this.currentTree = tree;
+    this.tree.setRoot(this.currentTree);
+
+    if (preferredFileName) {
+      const matchingFile = this.findRootFileByName(this.currentTree, preferredFileName) || this.findFileByName(this.currentTree, preferredFileName);
+      if (matchingFile) {
+        if (options.preferredContent !== undefined) {
+          await this.bindRestoredFile(matchingFile, options.preferredContent);
+        } else {
+          await this.openFile(matchingFile);
+        }
+        return;
+      }
+      this.setSaveStatus('error', '未在所选文件夹中找到同名文件');
+      return;
+    }
+
+    this.importedFile = null;
+    this.currentFile = null;
+    this.snapshotFile = null;
+    this.lastSavedContent = '';
+    this.dirty = false;
+    this.editor.setContent('');
+    this.preview.render('');
+    this.outline.update('');
+    await this.preferences.save({ activePath: '', documentSnapshot: null });
+    this.setSaveStatus('idle', '请选择文件');
+    this.updateFileTitle();
+    renderIcons();
   }
 
   async refreshDirectory() {
@@ -1332,7 +1333,6 @@ class MarkdownStudioApp {
   updateFileTitle() {
     const title = this.root.querySelector('#fileTitle');
     const path = this.root.querySelector('#filePath');
-    const openContainingFolderButton = this.root.querySelector('#openContainingFolderButton');
     title.textContent = this.currentFile?.name || this.importedFile?.name || this.snapshotFile?.name || '未命名文档';
     path.textContent = formatDisplayPath(
       this.currentFile?.path ||
@@ -1341,7 +1341,6 @@ class MarkdownStudioApp {
       this.snapshotFile?.url ||
       ''
     ) || '选择文件夹后打开 Markdown 文件';
-    openContainingFolderButton.hidden = !this.importedFile;
   }
 
   updateStats() {
