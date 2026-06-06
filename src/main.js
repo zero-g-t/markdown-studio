@@ -487,7 +487,7 @@ class PreviewEngine {
       html: true,
       linkify: true,
       typographer: true,
-      breaks: false
+      breaks: true
     }).use(markdownItTaskLists, {
       enabled: true,
       label: true,
