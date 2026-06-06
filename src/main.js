@@ -10,6 +10,7 @@ import {
   ChevronDown,
   ChevronRight,
   Columns2,
+  Copy,
   Dot,
   Eye,
   FilePlus,
@@ -35,6 +36,7 @@ const studioIcons = {
   ChevronDown,
   ChevronRight,
   Columns2,
+  Copy,
   Dot,
   Eye,
   FilePlus,
@@ -70,6 +72,23 @@ function escapeHtml(value) {
     .replaceAll('<', '&lt;')
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;');
+}
+
+function htmlToPlainText(html) {
+  const wrapper = document.createElement('div');
+  wrapper.innerHTML = html;
+
+  wrapper.querySelectorAll('br').forEach((node) => node.replaceWith('\n'));
+  wrapper
+    .querySelectorAll('h1,h2,h3,h4,h5,h6,p,li,blockquote,pre,tr,table,ul,ol')
+    .forEach((node) => node.append('\n'));
+
+  return wrapper.textContent
+    .replace(/\u00a0/g, ' ')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n[ \t]+/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }
 
 function normalizeFileName(name) {
@@ -502,6 +521,13 @@ class PreviewEngine {
     this.container.innerHTML = this.md.render(markdownSource);
   }
 
+  toPlainText(markdownSource) {
+    if (!markdownSource.trim()) {
+      return '';
+    }
+    return htmlToPlainText(this.md.render(markdownSource));
+  }
+
   scrollToLine(lineNumber) {
     const target = this.container.querySelector(`[data-source-line="${lineNumber}"]`);
     if (!target) {
@@ -832,10 +858,16 @@ class MarkdownStudioApp {
                 <h1 id="fileTitle">未命名文档</h1>
                 <p id="filePath">选择文件夹后打开 Markdown 文件</p>
               </div>
-              <button id="openContainingFolderButton" class="tool-button document-action" type="button" title="授权并加载当前文件所在文件夹" hidden>
-                <i data-lucide="folder-open"></i>
-                <span>打开所在文件夹</span>
-              </button>
+              <div class="document-actions">
+                <button id="copyPlainTextButton" class="tool-button document-action" type="button" title="复制不带 Markdown 标记的纯文本">
+                  <i data-lucide="copy"></i>
+                  <span>复制纯文本</span>
+                </button>
+                <button id="openContainingFolderButton" class="tool-button document-action" type="button" title="授权并加载当前文件所在文件夹" hidden>
+                  <i data-lucide="folder-open"></i>
+                  <span>打开所在文件夹</span>
+                </button>
+              </div>
             </div>
             <div class="editor-preview">
               <section class="editor-pane" aria-label="Markdown 编辑器">
@@ -870,6 +902,7 @@ class MarkdownStudioApp {
     this.root.querySelector('#refreshButton').addEventListener('click', () => this.refreshDirectory());
     this.root.querySelector('#saveButton').addEventListener('click', () => this.saveCurrentFile('manual'));
     this.root.querySelector('#newRootFileButton').addEventListener('click', () => this.createInRoot('file'));
+    this.root.querySelector('#copyPlainTextButton').addEventListener('click', () => this.copyPlainText());
     this.root.querySelector('#openContainingFolderButton').addEventListener('click', () => this.openImportedContainingFolder());
 
     this.root.querySelectorAll('[data-mode]').forEach((button) => {
@@ -1128,6 +1161,23 @@ class MarkdownStudioApp {
     });
 
     await this.saveQueue;
+  }
+
+  async copyPlainText() {
+    try {
+      const plainText = this.preview.toPlainText(this.editor.getContent());
+      await navigator.clipboard.writeText(plainText);
+      this.setSaveStatus('saved', '已复制纯文本');
+      window.setTimeout(() => {
+        if (this.dirty) {
+          this.setSaveStatus('dirty', this.importedFile ? '只读修改未保存' : '有未保存修改');
+        } else {
+          this.setSaveStatus(this.currentFile ? 'saved' : 'idle', this.currentFile ? '已保存' : (this.importedFile ? '只读导入' : '未打开文件'));
+        }
+      }, 1400);
+    } catch (error) {
+      this.showError(error);
+    }
   }
 
   setAutosave(enabled, updateElement = true) {
