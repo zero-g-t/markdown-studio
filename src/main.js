@@ -17,7 +17,9 @@ import {
   Folder,
   FolderOpen,
   FolderPlus,
+  PanelLeftClose,
   PanelLeftOpen,
+  PanelRightClose,
   Pencil,
   RefreshCw,
   Save,
@@ -40,7 +42,9 @@ const studioIcons = {
   Folder,
   FolderOpen,
   FolderPlus,
+  PanelLeftClose,
   PanelLeftOpen,
+  PanelRightClose,
   Pencil,
   RefreshCw,
   Save,
@@ -111,7 +115,9 @@ class PreferenceStore {
   constructor() {
     this.storage = getStorageArea();
     this.defaults = {
-      viewMode: 'split',
+      viewMode: 'preview',
+      leftSidebar: true,
+      outlineSidebar: true,
       autosave: true,
       theme: 'light'
     };
@@ -403,6 +409,17 @@ class PreviewEngine {
       token.attrSet('rel', 'noopener noreferrer');
       return originalLinkOpen(tokens, idx, options, env, self);
     };
+
+    const originalHeadingOpen = this.md.renderer.rules.heading_open || ((tokens, idx, options, env, self) => self.renderToken(tokens, idx, options));
+    this.md.renderer.rules.heading_open = (tokens, idx, options, env, self) => {
+      const token = tokens[idx];
+      const lineNumber = token.map?.[0] + 1;
+      if (lineNumber) {
+        token.attrSet('data-source-line', String(lineNumber));
+        token.attrJoin('class', 'preview-heading');
+      }
+      return originalHeadingOpen(tokens, idx, options, env, self);
+    };
   }
 
   render(markdownSource) {
@@ -412,12 +429,24 @@ class PreviewEngine {
     }
     this.container.innerHTML = this.md.render(markdownSource);
   }
+
+  scrollToLine(lineNumber) {
+    const target = this.container.querySelector(`[data-source-line="${lineNumber}"]`);
+    if (!target) {
+      return;
+    }
+
+    target.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    target.classList.add('preview-heading-flash');
+    window.setTimeout(() => target.classList.remove('preview-heading-flash'), 1200);
+  }
 }
 
 class OutlineManager {
-  constructor(container, editor) {
+  constructor(container, editor, preview) {
     this.container = container;
     this.editor = editor;
+    this.preview = preview;
     this.items = [];
   }
 
@@ -464,7 +493,10 @@ class OutlineManager {
         <span class="outline-marker">H${item.level}</span>
         <span class="outline-title">${escapeHtml(item.text)}</span>
       `;
-      button.addEventListener('click', () => this.editor.goToLine(item.lineNumber));
+      button.addEventListener('click', () => {
+        this.editor.goToLine(item.lineNumber);
+        this.preview.scrollToLine(item.lineNumber);
+      });
       entry.append(button);
       list.append(entry);
     });
@@ -577,6 +609,8 @@ class LayoutController {
   constructor(appElement) {
     this.appElement = appElement;
     this.mode = 'split';
+    this.leftSidebar = true;
+    this.outlineSidebar = true;
   }
 
   setMode(mode) {
@@ -585,6 +619,25 @@ class LayoutController {
     document.querySelectorAll('[data-mode]').forEach((button) => {
       button.classList.toggle('active', button.dataset.mode === mode);
       button.setAttribute('aria-pressed', String(button.dataset.mode === mode));
+    });
+  }
+
+  setSidebar(sidebar, visible) {
+    if (sidebar === 'left') {
+      this.leftSidebar = visible;
+      this.appElement.dataset.leftSidebar = visible ? 'visible' : 'hidden';
+    }
+    if (sidebar === 'outline') {
+      this.outlineSidebar = visible;
+      this.appElement.dataset.outlineSidebar = visible ? 'visible' : 'hidden';
+    }
+
+    document.querySelectorAll('[data-sidebar]').forEach((button) => {
+      const isActive =
+        (button.dataset.sidebar === 'left' && this.leftSidebar) ||
+        (button.dataset.sidebar === 'outline' && this.outlineSidebar);
+      button.classList.toggle('active', isActive);
+      button.setAttribute('aria-pressed', String(isActive));
     });
   }
 }
@@ -617,14 +670,16 @@ class MarkdownStudioApp {
     this.layout = new LayoutController(this.root.querySelector('.studio-shell'));
     this.editor = new EditorCore(this.root.querySelector('#editorHost'));
     this.preview = new PreviewEngine(this.root.querySelector('#previewHost'));
-    this.outline = new OutlineManager(this.root.querySelector('#outlineHost'), this.editor);
+    this.outline = new OutlineManager(this.root.querySelector('#outlineHost'), this.editor, this.preview);
     this.tree = new TreeView(this.root.querySelector('#treeHost'), {
       onOpenFile: (node) => this.openFile(node),
       onContextMenu: (event, node) => this.openContextMenu(event, node)
     });
 
     this.bindEvents();
-    this.layout.setMode(prefs.viewMode || 'split');
+    this.layout.setMode(prefs.viewMode || 'preview');
+    this.layout.setSidebar('left', prefs.leftSidebar !== false);
+    this.layout.setSidebar('outline', prefs.outlineSidebar !== false);
     this.setAutosave(this.autosave, false);
     const importedFile = await this.consumeImportedFile();
     if (importedFile) {
@@ -652,6 +707,12 @@ class MarkdownStudioApp {
             </button>
             <button id="refreshButton" class="icon-button" type="button" title="刷新目录树">
               <i data-lucide="refresh-cw"></i>
+            </button>
+            <button data-sidebar="left" class="icon-button active" type="button" title="显示或隐藏左侧文件目录">
+              <i data-lucide="panel-left-close"></i>
+            </button>
+            <button data-sidebar="outline" class="icon-button active" type="button" title="显示或隐藏右侧大纲">
+              <i data-lucide="panel-right-close"></i>
             </button>
           </div>
           <div class="segmented-control" aria-label="视图模式">
@@ -737,6 +798,21 @@ class MarkdownStudioApp {
       button.addEventListener('click', async () => {
         this.layout.setMode(button.dataset.mode);
         await this.preferences.save({ viewMode: button.dataset.mode });
+      });
+    });
+
+    this.root.querySelectorAll('[data-sidebar]').forEach((button) => {
+      button.addEventListener('click', async () => {
+        if (button.dataset.sidebar === 'left') {
+          const visible = !this.layout.leftSidebar;
+          this.layout.setSidebar('left', visible);
+          await this.preferences.save({ leftSidebar: visible });
+        }
+        if (button.dataset.sidebar === 'outline') {
+          const visible = !this.layout.outlineSidebar;
+          this.layout.setSidebar('outline', visible);
+          await this.preferences.save({ outlineSidebar: visible });
+        }
       });
     });
 

@@ -122,6 +122,12 @@ button {
   background: var(--surface-muted);
 }
 
+.icon-button.active {
+  border-color: #9ec8bb;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
 button:focus-visible,
 input:focus-visible {
   outline: 2px solid var(--accent);
@@ -208,9 +214,25 @@ svg {
 
 .workspace {
   display: grid;
-  grid-template-columns: minmax(210px, 260px) minmax(0, 1fr) minmax(190px, 240px);
+  grid-template-columns:
+    var(--left-sidebar-width, minmax(210px, 260px))
+    minmax(0, 1fr)
+    var(--outline-sidebar-width, minmax(190px, 240px));
   min-height: 0;
   overflow: hidden;
+}
+
+.studio-shell[data-left-sidebar="hidden"] {
+  --left-sidebar-width: 0;
+}
+
+.studio-shell[data-outline-sidebar="hidden"] {
+  --outline-sidebar-width: 0;
+}
+
+.studio-shell[data-left-sidebar="hidden"] .sidebar,
+.studio-shell[data-outline-sidebar="hidden"] .outline-pane {
+  display: none;
 }
 
 .sidebar,
@@ -506,6 +528,12 @@ svg {
 
 .markdown-body a {
   color: var(--accent-strong);
+}
+
+.preview-heading-flash {
+  border-radius: 6px;
+  background: #fff2a8;
+  transition: background 0.2s ease;
 }
 
 .outline-list {
