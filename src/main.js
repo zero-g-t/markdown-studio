@@ -138,6 +138,7 @@ class PreferenceStore {
       leftSidebar: true,
       outlineSidebar: true,
       activePath: '',
+      documentSnapshot: null,
       autosave: true,
       theme: 'light'
     };
@@ -747,6 +748,7 @@ class MarkdownStudioApp {
     this.fs = new FileSystemModule();
     this.currentFile = null;
     this.importedFile = null;
+    this.snapshotFile = null;
     this.currentTree = null;
     this.lastSavedContent = '';
     this.dirty = false;
@@ -758,6 +760,9 @@ class MarkdownStudioApp {
       this.outline.update(content);
     }, PREVIEW_DELAY);
     this.queueAutosave = debounce(() => this.saveCurrentFile('auto'), AUTOSAVE_DELAY);
+    this.queueSnapshotSave = debounce(() => {
+      this.persistDocumentSnapshot().catch((error) => console.warn('Failed to persist document snapshot', error));
+    }, 300);
 
     this.renderShell();
   }
@@ -783,10 +788,14 @@ class MarkdownStudioApp {
     if (importedFile) {
       this.loadImportedFile(importedFile);
     } else {
-      this.editor.setContent(EMPTY_DOCUMENT);
-      this.preview.render(EMPTY_DOCUMENT);
-      this.outline.update(EMPTY_DOCUMENT);
-      this.setSaveStatus('idle', '未打开文件');
+      if (prefs.documentSnapshot) {
+        this.loadDocumentSnapshot(prefs.documentSnapshot);
+      } else {
+        this.editor.setContent(EMPTY_DOCUMENT);
+        this.preview.render(EMPTY_DOCUMENT);
+        this.outline.update(EMPTY_DOCUMENT);
+        this.setSaveStatus('idle', '未打开文件');
+      }
       await this.restorePreviousDirectory(prefs.activePath);
     }
     this.updateFileTitle();
@@ -934,11 +943,16 @@ class MarkdownStudioApp {
 
     this.editor.onChange((content) => {
       this.dirty = content !== this.lastSavedContent;
-      const dirtyText = this.importedFile ? '只读修改未保存' : '有未保存修改';
-      const savedText = this.importedFile ? '只读导入' : '已保存';
+      const dirtyText = this.importedFile
+        ? '只读修改未保存'
+        : (this.snapshotFile ? '快照修改未保存' : '有未保存修改');
+      const savedText = this.importedFile
+        ? '只读导入'
+        : (this.snapshotFile ? '等待恢复文件' : '已保存');
       this.setSaveStatus(this.dirty ? 'dirty' : 'saved', this.dirty ? dirtyText : savedText);
       this.refreshPreview();
       this.updateStats();
+      this.queueSnapshotSave();
       if (this.autosave && this.currentFile) {
         this.queueAutosave();
       }
@@ -997,12 +1011,44 @@ class MarkdownStudioApp {
   loadImportedFile(file) {
     this.currentFile = null;
     this.importedFile = file;
+    this.snapshotFile = null;
     this.lastSavedContent = file.content || '';
     this.dirty = false;
     this.editor.setContent(this.lastSavedContent);
     this.preview.render(this.lastSavedContent);
     this.outline.update(this.lastSavedContent);
     this.setSaveStatus('idle', '只读导入');
+    this.persistDocumentSnapshot();
+  }
+
+  loadDocumentSnapshot(snapshot) {
+    this.currentFile = null;
+    this.importedFile = null;
+    this.snapshotFile = snapshot;
+    this.lastSavedContent = snapshot.content || '';
+    this.dirty = false;
+    this.editor.setContent(this.lastSavedContent);
+    this.preview.render(this.lastSavedContent);
+    this.outline.update(this.lastSavedContent);
+    this.setSaveStatus('idle', '正在恢复文件');
+  }
+
+  async persistDocumentSnapshot() {
+    const source = this.currentFile || this.importedFile || this.snapshotFile;
+    if (!source) {
+      await this.preferences.save({ documentSnapshot: null });
+      return;
+    }
+
+    await this.preferences.save({
+      documentSnapshot: {
+        name: source.name,
+        path: source.path || '',
+        url: source.url || '',
+        content: this.editor.getContent(),
+        updatedAt: Date.now()
+      }
+    });
   }
 
   async restorePreviousDirectory(activePath) {
@@ -1010,7 +1056,7 @@ class MarkdownStudioApp {
       this.setSaveStatus('saving', '正在恢复目录');
       const tree = await this.fs.restoreDirectory();
       if (!tree) {
-        this.setSaveStatus('idle', '未打开文件');
+        this.setSaveStatus('idle', this.snapshotFile ? '等待恢复文件' : '未打开文件');
         return;
       }
 
@@ -1019,15 +1065,37 @@ class MarkdownStudioApp {
 
       const activeNode = activePath ? this.findNodeByPath(tree, activePath) : null;
       if (activeNode?.type === 'file') {
+        if (this.snapshotFile?.path === activeNode.path) {
+          await this.bindRestoredFile(activeNode, this.snapshotFile.content || '');
+          return;
+        }
         await this.openFile(activeNode);
         return;
       }
 
-      this.setSaveStatus('idle', '请选择文件');
+      this.setSaveStatus('idle', this.snapshotFile ? '等待恢复文件' : '请选择文件');
     } catch (error) {
       console.warn('Failed to restore previous directory', error);
-      this.setSaveStatus('idle', '未打开文件');
+      this.setSaveStatus('idle', this.snapshotFile ? '等待恢复文件' : '未打开文件');
     }
+  }
+
+  async bindRestoredFile(node, snapshotContent) {
+    const diskContent = await this.fs.readFile(node.handle);
+    this.currentFile = node;
+    this.importedFile = null;
+    this.snapshotFile = null;
+    this.lastSavedContent = diskContent;
+    this.dirty = snapshotContent !== diskContent;
+    this.editor.setContent(snapshotContent);
+    this.preview.render(snapshotContent);
+    this.outline.update(snapshotContent);
+    this.tree.setActivePath(node.path);
+    this.updateFileTitle();
+    this.updateStats();
+    this.setSaveStatus(this.dirty ? 'dirty' : 'saved', this.dirty ? '有未保存修改' : '已保存');
+    await this.preferences.save({ activePath: node.path });
+    this.persistDocumentSnapshot().catch((error) => console.warn('Failed to persist document snapshot', error));
   }
 
   async openImportedContainingFolder() {
@@ -1053,7 +1121,13 @@ class MarkdownStudioApp {
         }
       }
       this.currentFile = null;
-      await this.preferences.save({ activePath: '' });
+      this.snapshotFile = null;
+      this.lastSavedContent = '';
+      this.dirty = false;
+      this.editor.setContent('');
+      this.preview.render('');
+      this.outline.update('');
+      await this.preferences.save({ activePath: '', documentSnapshot: null });
       this.setSaveStatus('idle', '请选择文件');
       this.updateFileTitle();
       renderIcons();
@@ -1091,6 +1165,7 @@ class MarkdownStudioApp {
       this.setSaveStatus('saving', '正在打开文件');
       const content = await this.fs.readFile(node.handle);
       this.importedFile = null;
+      this.snapshotFile = null;
       this.currentFile = node;
       this.lastSavedContent = content;
       this.dirty = false;
@@ -1102,6 +1177,7 @@ class MarkdownStudioApp {
       this.updateStats();
       this.setSaveStatus('saved', '已保存');
       await this.preferences.save({ activePath: node.path });
+      this.persistDocumentSnapshot().catch((error) => console.warn('Failed to persist document snapshot', error));
       this.editor.focus();
     } catch (error) {
       if (error.message === 'CANCELLED_BY_USER') {
@@ -1116,8 +1192,8 @@ class MarkdownStudioApp {
       return;
     }
 
-    if (this.importedFile && !this.currentFile) {
-      const shouldDiscard = window.confirm('当前内容来自浏览器打开的本地 Markdown 文件，不能直接写回。继续操作会丢弃未保存修改。');
+    if ((this.importedFile || this.snapshotFile) && !this.currentFile) {
+      const shouldDiscard = window.confirm('当前内容还没有绑定到可写文件句柄。继续操作会丢弃未保存修改。');
       if (!shouldDiscard) {
         throw new Error('CANCELLED_BY_USER');
       }
@@ -1137,7 +1213,10 @@ class MarkdownStudioApp {
 
   async saveCurrentFile(mode) {
     if (!this.currentFile) {
-      this.setSaveStatus(this.importedFile ? 'error' : 'idle', this.importedFile ? '只读来源不能直接保存' : '未打开文件');
+      const message = this.importedFile
+        ? '只读来源不能直接保存'
+        : (this.snapshotFile ? '请先恢复或打开文件夹' : '未打开文件');
+      this.setSaveStatus(this.importedFile || this.snapshotFile ? 'error' : 'idle', message);
       return;
     }
 
@@ -1152,6 +1231,7 @@ class MarkdownStudioApp {
         await this.fs.writeFile(this.currentFile.handle, content);
         this.lastSavedContent = content;
         this.dirty = false;
+        this.persistDocumentSnapshot().catch((error) => console.warn('Failed to persist document snapshot', error));
         this.setSaveStatus('saved', '已保存');
       } catch (error) {
         this.dirty = true;
@@ -1170,9 +1250,15 @@ class MarkdownStudioApp {
       this.setSaveStatus('saved', '已复制纯文本');
       window.setTimeout(() => {
         if (this.dirty) {
-          this.setSaveStatus('dirty', this.importedFile ? '只读修改未保存' : '有未保存修改');
+          const message = this.importedFile
+            ? '只读修改未保存'
+            : (this.snapshotFile ? '快照修改未保存' : '有未保存修改');
+          this.setSaveStatus('dirty', message);
         } else {
-          this.setSaveStatus(this.currentFile ? 'saved' : 'idle', this.currentFile ? '已保存' : (this.importedFile ? '只读导入' : '未打开文件'));
+          const message = this.currentFile
+            ? '已保存'
+            : (this.importedFile ? '只读导入' : (this.snapshotFile ? '等待恢复文件' : '未打开文件'));
+          this.setSaveStatus(this.currentFile ? 'saved' : 'idle', message);
         }
       }, 1400);
     } catch (error) {
@@ -1194,8 +1280,8 @@ class MarkdownStudioApp {
     const title = this.root.querySelector('#fileTitle');
     const path = this.root.querySelector('#filePath');
     const openContainingFolderButton = this.root.querySelector('#openContainingFolderButton');
-    title.textContent = this.currentFile?.name || this.importedFile?.name || '未命名文档';
-    path.textContent = this.currentFile?.path || this.importedFile?.url || '选择文件夹后打开 Markdown 文件';
+    title.textContent = this.currentFile?.name || this.importedFile?.name || this.snapshotFile?.name || '未命名文档';
+    path.textContent = this.currentFile?.path || this.importedFile?.url || this.snapshotFile?.path || '选择文件夹后打开 Markdown 文件';
     openContainingFolderButton.hidden = !this.importedFile;
   }
 
@@ -1344,6 +1430,7 @@ class MarkdownStudioApp {
       await this.fs.deleteEntry(node);
       if (this.currentFile?.path === node.path || this.currentFile?.path.startsWith(`${node.path}/`)) {
         this.currentFile = null;
+        this.snapshotFile = null;
         this.lastSavedContent = '';
         this.dirty = false;
         this.editor.setContent('');
@@ -1351,6 +1438,7 @@ class MarkdownStudioApp {
         this.outline.update('');
         this.updateFileTitle();
         this.setSaveStatus('idle', '未打开文件');
+        await this.preferences.save({ activePath: '', documentSnapshot: null });
       }
       await this.refreshDirectory();
     } catch (error) {
