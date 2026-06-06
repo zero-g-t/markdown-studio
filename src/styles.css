@@ -218,6 +218,7 @@ svg {
     var(--left-sidebar-width, minmax(210px, 260px))
     minmax(0, 1fr)
     var(--outline-sidebar-width, minmax(190px, 240px));
+  grid-template-areas: "sidebar main outline";
   min-height: 0;
   overflow: hidden;
 }
@@ -245,7 +246,12 @@ svg {
   background: var(--surface-subtle);
 }
 
+.sidebar {
+  grid-area: sidebar;
+}
+
 .outline-pane {
+  grid-area: outline;
   border-right: 0;
   border-left: 1px solid var(--border);
 }
@@ -327,6 +333,7 @@ svg {
 }
 
 .main-pane {
+  grid-area: main;
   display: grid;
   grid-template-rows: 58px minmax(0, 1fr);
   min-width: 0;
@@ -337,10 +344,27 @@ svg {
 .document-bar {
   display: flex;
   align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   min-width: 0;
   padding: 9px 14px;
   border-bottom: 1px solid var(--border);
   background: var(--surface);
+}
+
+.document-bar > div {
+  min-width: 0;
+}
+
+.document-action {
+  flex: 0 0 auto;
+  border-color: var(--border);
+  background: var(--surface-subtle);
+}
+
+.document-action:hover {
+  border-color: var(--border-strong);
+  background: var(--surface-muted);
 }
 
 .document-bar h1 {

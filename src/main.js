@@ -118,6 +118,7 @@ class PreferenceStore {
       viewMode: 'preview',
       leftSidebar: true,
       outlineSidebar: true,
+      activePath: '',
       autosave: true,
       theme: 'light'
     };
@@ -132,9 +133,51 @@ class PreferenceStore {
   }
 }
 
+class DirectoryHandleStore {
+  constructor() {
+    this.dbName = 'markdown-studio';
+    this.storeName = 'handles';
+    this.rootKey = 'root-directory';
+  }
+
+  async openDb() {
+    return new Promise((resolve, reject) => {
+      const request = indexedDB.open(this.dbName, 1);
+      request.onupgradeneeded = () => {
+        request.result.createObjectStore(this.storeName);
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+  }
+
+  async getRootHandle() {
+    const db = await this.openDb();
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction(this.storeName, 'readonly');
+      const request = transaction.objectStore(this.storeName).get(this.rootKey);
+      request.onsuccess = () => resolve(request.result || null);
+      request.onerror = () => reject(request.error);
+      transaction.oncomplete = () => db.close();
+    });
+  }
+
+  async setRootHandle(handle) {
+    const db = await this.openDb();
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction(this.storeName, 'readwrite');
+      const request = transaction.objectStore(this.storeName).put(handle, this.rootKey);
+      request.onsuccess = () => resolve();
+      request.onerror = () => reject(request.error);
+      transaction.oncomplete = () => db.close();
+    });
+  }
+}
+
 class FileSystemModule {
   constructor() {
     this.rootHandle = null;
+    this.handleStore = new DirectoryHandleStore();
   }
 
   isSupported() {
@@ -150,7 +193,36 @@ class FileSystemModule {
       id: 'markdown-studio-root',
       mode: 'readwrite'
     });
+    await this.handleStore.setRootHandle(this.rootHandle);
     return this.buildTree(this.rootHandle);
+  }
+
+  async restoreDirectory() {
+    const handle = await this.handleStore.getRootHandle();
+    if (!handle) {
+      return null;
+    }
+
+    const hasPermission = await this.verifyPermission(handle);
+    if (!hasPermission) {
+      return null;
+    }
+
+    this.rootHandle = handle;
+    return this.buildTree(this.rootHandle);
+  }
+
+  async verifyPermission(handle) {
+    const options = { mode: 'readwrite' };
+    if ((await handle.queryPermission(options)) === 'granted') {
+      return true;
+    }
+
+    try {
+      return (await handle.requestPermission(options)) === 'granted';
+    } catch {
+      return false;
+    }
   }
 
   async buildTree(handle = this.rootHandle, path = '', parentHandle = null) {
@@ -517,7 +589,7 @@ class TreeView {
 
   setRoot(root) {
     this.root = root;
-    this.collectOpenPaths(root);
+    this.openPaths = new Set([root.path || '/']);
     this.render();
   }
 
@@ -689,6 +761,7 @@ class MarkdownStudioApp {
       this.preview.render(EMPTY_DOCUMENT);
       this.outline.update(EMPTY_DOCUMENT);
       this.setSaveStatus('idle', '未打开文件');
+      await this.restorePreviousDirectory(prefs.activePath);
     }
     this.updateFileTitle();
     this.updateStats();
@@ -759,6 +832,10 @@ class MarkdownStudioApp {
                 <h1 id="fileTitle">未命名文档</h1>
                 <p id="filePath">选择文件夹后打开 Markdown 文件</p>
               </div>
+              <button id="openContainingFolderButton" class="tool-button document-action" type="button" title="授权并加载当前文件所在文件夹" hidden>
+                <i data-lucide="folder-open"></i>
+                <span>打开所在文件夹</span>
+              </button>
             </div>
             <div class="editor-preview">
               <section class="editor-pane" aria-label="Markdown 编辑器">
@@ -793,6 +870,7 @@ class MarkdownStudioApp {
     this.root.querySelector('#refreshButton').addEventListener('click', () => this.refreshDirectory());
     this.root.querySelector('#saveButton').addEventListener('click', () => this.saveCurrentFile('manual'));
     this.root.querySelector('#newRootFileButton').addEventListener('click', () => this.createInRoot('file'));
+    this.root.querySelector('#openContainingFolderButton').addEventListener('click', () => this.openImportedContainingFolder());
 
     this.root.querySelectorAll('[data-mode]').forEach((button) => {
       button.addEventListener('click', async () => {
@@ -894,14 +972,57 @@ class MarkdownStudioApp {
     this.setSaveStatus('idle', '只读导入');
   }
 
-  async openDirectory() {
+  async restorePreviousDirectory(activePath) {
+    try {
+      this.setSaveStatus('saving', '正在恢复目录');
+      const tree = await this.fs.restoreDirectory();
+      if (!tree) {
+        this.setSaveStatus('idle', '未打开文件');
+        return;
+      }
+
+      this.currentTree = tree;
+      this.tree.setRoot(tree);
+
+      const activeNode = activePath ? this.findNodeByPath(tree, activePath) : null;
+      if (activeNode?.type === 'file') {
+        await this.openFile(activeNode);
+        return;
+      }
+
+      this.setSaveStatus('idle', '请选择文件');
+    } catch (error) {
+      console.warn('Failed to restore previous directory', error);
+      this.setSaveStatus('idle', '未打开文件');
+    }
+  }
+
+  async openImportedContainingFolder() {
+    if (!this.importedFile?.name) {
+      return;
+    }
+    await this.openDirectory({ preferredFileName: this.importedFile.name });
+  }
+
+  async openDirectory(options = {}) {
     try {
       await this.ensureSafeFileSwitch();
+      const preferredFileName = options.preferredFileName;
       this.importedFile = null;
       this.setSaveStatus('saving', '正在读取目录');
       this.currentTree = await this.fs.pickDirectory();
       this.tree.setRoot(this.currentTree);
+      if (preferredFileName) {
+        const matchingFile = this.findRootFileByName(this.currentTree, preferredFileName) || this.findFileByName(this.currentTree, preferredFileName);
+        if (matchingFile) {
+          await this.openFile(matchingFile);
+          return;
+        }
+      }
+      this.currentFile = null;
+      await this.preferences.save({ activePath: '' });
       this.setSaveStatus('idle', '请选择文件');
+      this.updateFileTitle();
       renderIcons();
     } catch (error) {
       if (error.name === 'AbortError') {
@@ -947,6 +1068,7 @@ class MarkdownStudioApp {
       this.updateFileTitle();
       this.updateStats();
       this.setSaveStatus('saved', '已保存');
+      await this.preferences.save({ activePath: node.path });
       this.editor.focus();
     } catch (error) {
       if (error.message === 'CANCELLED_BY_USER') {
@@ -1021,8 +1143,10 @@ class MarkdownStudioApp {
   updateFileTitle() {
     const title = this.root.querySelector('#fileTitle');
     const path = this.root.querySelector('#filePath');
+    const openContainingFolderButton = this.root.querySelector('#openContainingFolderButton');
     title.textContent = this.currentFile?.name || this.importedFile?.name || '未命名文档';
     path.textContent = this.currentFile?.path || this.importedFile?.url || '选择文件夹后打开 Markdown 文件';
+    openContainingFolderButton.hidden = !this.importedFile;
   }
 
   updateStats() {
@@ -1203,6 +1327,26 @@ class MarkdownStudioApp {
     }
     for (const child of node.children || []) {
       const found = this.findNodeByPath(child, path);
+      if (found) {
+        return found;
+      }
+    }
+    return null;
+  }
+
+  findRootFileByName(root, name) {
+    return root?.children?.find((child) => child.type === 'file' && child.name === name) || null;
+  }
+
+  findFileByName(node, name) {
+    if (!node) {
+      return null;
+    }
+    if (node.type === 'file' && node.name === name) {
+      return node;
+    }
+    for (const child of node.children || []) {
+      const found = this.findFileByName(child, name);
       if (found) {
         return found;
       }
