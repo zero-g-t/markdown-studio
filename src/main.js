@@ -18,10 +18,12 @@ import {
   Folder,
   FolderOpen,
   FolderPlus,
+  Minus,
   PanelLeftClose,
   PanelLeftOpen,
   PanelRightClose,
   Pencil,
+  Plus,
   RefreshCw,
   Save,
   Trash2,
@@ -44,10 +46,12 @@ const studioIcons = {
   Folder,
   FolderOpen,
   FolderPlus,
+  Minus,
   PanelLeftClose,
   PanelLeftOpen,
   PanelRightClose,
   Pencil,
+  Plus,
   RefreshCw,
   Save,
   Trash2
@@ -139,6 +143,7 @@ class PreferenceStore {
       outlineSidebar: true,
       activePath: '',
       documentSnapshot: null,
+      fontSize: 16,
       autosave: true,
       theme: 'light'
     };
@@ -783,6 +788,7 @@ class MarkdownStudioApp {
     this.layout.setMode(prefs.viewMode || 'preview');
     this.layout.setSidebar('left', prefs.leftSidebar !== false);
     this.layout.setSidebar('outline', prefs.outlineSidebar !== false);
+    this.setFontSize(prefs.fontSize || 16, false);
     this.setAutosave(this.autosave, false);
     const importedFile = await this.consumeImportedFile();
     if (importedFile) {
@@ -835,6 +841,15 @@ class MarkdownStudioApp {
             <button data-mode="preview" type="button" title="仅预览">
               <i data-lucide="eye"></i>
               <span>预览</span>
+            </button>
+          </div>
+          <div class="font-size-control" aria-label="字号">
+            <button id="decreaseFontButton" class="icon-button" type="button" title="减小字号">
+              <i data-lucide="minus"></i>
+            </button>
+            <input id="fontSizeInput" type="number" min="13" max="24" step="1" title="字号" />
+            <button id="increaseFontButton" class="icon-button" type="button" title="增大字号">
+              <i data-lucide="plus"></i>
             </button>
           </div>
           <div class="toolbar-group push">
@@ -913,6 +928,11 @@ class MarkdownStudioApp {
     this.root.querySelector('#newRootFileButton').addEventListener('click', () => this.createInRoot('file'));
     this.root.querySelector('#copyPlainTextButton').addEventListener('click', () => this.copyPlainText());
     this.root.querySelector('#openContainingFolderButton').addEventListener('click', () => this.openImportedContainingFolder());
+    this.root.querySelector('#decreaseFontButton').addEventListener('click', () => this.adjustFontSize(-1));
+    this.root.querySelector('#increaseFontButton').addEventListener('click', () => this.adjustFontSize(1));
+    this.root.querySelector('#fontSizeInput').addEventListener('change', (event) => {
+      this.setFontSize(Number(event.target.value));
+    });
 
     this.root.querySelectorAll('[data-mode]').forEach((button) => {
       button.addEventListener('click', async () => {
@@ -1263,6 +1283,21 @@ class MarkdownStudioApp {
       }, 1400);
     } catch (error) {
       this.showError(error);
+    }
+  }
+
+  async adjustFontSize(delta) {
+    const input = this.root.querySelector('#fontSizeInput');
+    await this.setFontSize(Number(input.value || 16) + delta);
+  }
+
+  async setFontSize(value, persist = true) {
+    const size = Math.max(13, Math.min(24, Number.isFinite(value) ? value : 16));
+    document.documentElement.style.setProperty('--content-font-size', `${size}px`);
+    this.root.querySelector('#fontSizeInput').value = String(size);
+
+    if (persist) {
+      await this.preferences.save({ fontSize: size });
     }
   }
 
