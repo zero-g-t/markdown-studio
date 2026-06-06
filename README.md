@@ -37,3 +37,14 @@ npm run build
 4. 选择本项目的 `dist/` 目录
 
 扩展安装后，点击工具栏里的扩展图标会打开 `editor.html`。
+
+## 接管浏览器打开的 Markdown 文件
+
+Chrome 不允许扩展直接注册成系统级 `.md` 默认打开程序。要让 Chrome 打开 `file://.../*.md` 时自动进入 Markdown Studio，需要：
+
+1. 在 `chrome://extensions/` 找到 Markdown Studio
+2. 点击“详细信息”
+3. 开启“允许访问文件网址”
+4. 用 Chrome 打开本地 `.md` 文件
+
+这种入口读取到的是浏览器页面里的文件内容，属于只读导入。需要写回本地文件时，请在 Markdown Studio 里点击“打开文件夹”，通过 File System Access API 授权目录写入。

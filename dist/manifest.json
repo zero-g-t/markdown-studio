@@ -10,7 +10,15 @@
     "service_worker": "background.js",
     "type": "module"
   },
+  "host_permissions": ["file:///*"],
   "permissions": ["storage"],
+  "content_scripts": [
+    {
+      "matches": ["file:///*"],
+      "js": ["open-md-file.js"],
+      "run_at": "document_idle"
+    }
+  ],
   "content_security_policy": {
     "extension_pages": "script-src 'self'; object-src 'self';"
   }

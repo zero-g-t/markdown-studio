@@ -595,6 +595,7 @@ class MarkdownStudioApp {
     this.preferences = new PreferenceStore();
     this.fs = new FileSystemModule();
     this.currentFile = null;
+    this.importedFile = null;
     this.currentTree = null;
     this.lastSavedContent = '';
     this.dirty = false;
@@ -625,12 +626,17 @@ class MarkdownStudioApp {
     this.bindEvents();
     this.layout.setMode(prefs.viewMode || 'split');
     this.setAutosave(this.autosave, false);
-    this.editor.setContent(EMPTY_DOCUMENT);
-    this.preview.render(EMPTY_DOCUMENT);
-    this.outline.update(EMPTY_DOCUMENT);
+    const importedFile = await this.consumeImportedFile();
+    if (importedFile) {
+      this.loadImportedFile(importedFile);
+    } else {
+      this.editor.setContent(EMPTY_DOCUMENT);
+      this.preview.render(EMPTY_DOCUMENT);
+      this.outline.update(EMPTY_DOCUMENT);
+      this.setSaveStatus('idle', '未打开文件');
+    }
     this.updateFileTitle();
     this.updateStats();
-    this.setSaveStatus('idle', '未打开文件');
     this.setSupportNotice();
     renderIcons();
   }
@@ -741,7 +747,9 @@ class MarkdownStudioApp {
 
     this.editor.onChange((content) => {
       this.dirty = content !== this.lastSavedContent;
-      this.setSaveStatus(this.dirty ? 'dirty' : 'saved', this.dirty ? '有未保存修改' : '已保存');
+      const dirtyText = this.importedFile ? '只读修改未保存' : '有未保存修改';
+      const savedText = this.importedFile ? '只读导入' : '已保存';
+      this.setSaveStatus(this.dirty ? 'dirty' : 'saved', this.dirty ? dirtyText : savedText);
       this.refreshPreview();
       this.updateStats();
       if (this.autosave && this.currentFile) {
@@ -780,9 +788,40 @@ class MarkdownStudioApp {
     notice.textContent = '当前浏览器不支持本地目录写入，请在最新版 Chrome 或 Edge 中运行扩展。';
   }
 
+  async consumeImportedFile() {
+    const importId = new URL(window.location.href).searchParams.get('import');
+    if (!importId || !globalThis.chrome?.storage) {
+      return null;
+    }
+
+    const key = `markdown-file:${importId}`;
+    const storage = chrome.storage.session || chrome.storage.local;
+    const imported = await new Promise((resolve) => {
+      storage.get(key, (items) => resolve(items[key] || null));
+    });
+
+    if (imported) {
+      await new Promise((resolve) => storage.remove(key, resolve));
+    }
+
+    return imported;
+  }
+
+  loadImportedFile(file) {
+    this.currentFile = null;
+    this.importedFile = file;
+    this.lastSavedContent = file.content || '';
+    this.dirty = false;
+    this.editor.setContent(this.lastSavedContent);
+    this.preview.render(this.lastSavedContent);
+    this.outline.update(this.lastSavedContent);
+    this.setSaveStatus('idle', '只读导入');
+  }
+
   async openDirectory() {
     try {
       await this.ensureSafeFileSwitch();
+      this.importedFile = null;
       this.setSaveStatus('saving', '正在读取目录');
       this.currentTree = await this.fs.pickDirectory();
       this.tree.setRoot(this.currentTree);
@@ -791,6 +830,9 @@ class MarkdownStudioApp {
     } catch (error) {
       if (error.name === 'AbortError') {
         this.setSaveStatus(this.currentFile ? 'saved' : 'idle', this.currentFile ? '已保存' : '未打开文件');
+        return;
+      }
+      if (error.message === 'CANCELLED_BY_USER') {
         return;
       }
       this.showError(error);
@@ -806,6 +848,9 @@ class MarkdownStudioApp {
       this.tree.setRoot(this.currentTree);
       this.tree.setActivePath(this.currentFile?.path || '');
     } catch (error) {
+      if (error.message === 'CANCELLED_BY_USER') {
+        return;
+      }
       this.showError(error);
     }
   }
@@ -815,6 +860,7 @@ class MarkdownStudioApp {
       await this.ensureSafeFileSwitch();
       this.setSaveStatus('saving', '正在打开文件');
       const content = await this.fs.readFile(node.handle);
+      this.importedFile = null;
       this.currentFile = node;
       this.lastSavedContent = content;
       this.dirty = false;
@@ -827,12 +873,23 @@ class MarkdownStudioApp {
       this.setSaveStatus('saved', '已保存');
       this.editor.focus();
     } catch (error) {
+      if (error.message === 'CANCELLED_BY_USER') {
+        return;
+      }
       this.showError(error);
     }
   }
 
   async ensureSafeFileSwitch() {
     if (!this.dirty) {
+      return;
+    }
+
+    if (this.importedFile && !this.currentFile) {
+      const shouldDiscard = window.confirm('当前内容来自浏览器打开的本地 Markdown 文件，不能直接写回。继续操作会丢弃未保存修改。');
+      if (!shouldDiscard) {
+        throw new Error('CANCELLED_BY_USER');
+      }
       return;
     }
 
@@ -849,7 +906,7 @@ class MarkdownStudioApp {
 
   async saveCurrentFile(mode) {
     if (!this.currentFile) {
-      this.setSaveStatus('idle', '未打开文件');
+      this.setSaveStatus(this.importedFile ? 'error' : 'idle', this.importedFile ? '只读来源不能直接保存' : '未打开文件');
       return;
     }
 
@@ -888,8 +945,8 @@ class MarkdownStudioApp {
   updateFileTitle() {
     const title = this.root.querySelector('#fileTitle');
     const path = this.root.querySelector('#filePath');
-    title.textContent = this.currentFile?.name || '未命名文档';
-    path.textContent = this.currentFile?.path || '选择文件夹后打开 Markdown 文件';
+    title.textContent = this.currentFile?.name || this.importedFile?.name || '未命名文档';
+    path.textContent = this.currentFile?.path || this.importedFile?.url || '选择文件夹后打开 Markdown 文件';
   }
 
   updateStats() {
@@ -986,6 +1043,9 @@ class MarkdownStudioApp {
 
       await this.refreshDirectory();
     } catch (error) {
+      if (error.message === 'CANCELLED_BY_USER') {
+        return;
+      }
       this.showError(error);
     }
   }
@@ -1017,6 +1077,9 @@ class MarkdownStudioApp {
         }
       }
     } catch (error) {
+      if (error.message === 'CANCELLED_BY_USER') {
+        return;
+      }
       this.showError(error);
     }
   }
