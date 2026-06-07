@@ -1132,14 +1132,27 @@ class MarkdownStudioApp {
   }
 
   async openDirectory(options = {}) {
+    const unboundSource = !this.currentFile && (this.importedFile || this.snapshotFile);
+    const preferredFileName = options.preferredFileName || (unboundSource ? (this.importedFile?.name || this.snapshotFile?.name) : '');
+    const preferredContent = options.preferredContent ?? (unboundSource ? this.editor.getContent() : undefined);
+
     try {
-      await this.ensureSafeFileSwitch();
+      if (!unboundSource) {
+        await this.ensureSafeFileSwitch();
+      }
       this.setSaveStatus('saving', '正在读取目录');
       const tree = await this.fs.pickDirectory();
-      await this.applyPickedDirectory(tree, options);
+      await this.applyPickedDirectory(tree, {
+        ...options,
+        preferredFileName,
+        preferredContent
+      });
     } catch (error) {
       if (error.name === 'AbortError') {
-        this.setSaveStatus(this.currentFile ? 'saved' : 'idle', this.currentFile ? '已保存' : '未打开文件');
+        const statusText = this.currentFile
+          ? '已保存'
+          : (this.importedFile ? '只读导入' : '未打开文件');
+        this.setSaveStatus(this.currentFile ? 'saved' : 'idle', statusText);
         return;
       }
       if (error.message === 'CANCELLED_BY_USER') {
@@ -1253,7 +1266,7 @@ class MarkdownStudioApp {
   async saveCurrentFile(mode) {
     if (!this.currentFile) {
       const message = this.importedFile
-        ? '只读来源不能直接保存'
+        ? '请先打开文件夹绑定文件'
         : (this.snapshotFile ? '请先恢复或打开文件夹' : '未打开文件');
       this.setSaveStatus(this.importedFile || this.snapshotFile ? 'error' : 'idle', message);
       return;
