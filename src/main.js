@@ -31,6 +31,7 @@ import {
 } from 'lucide';
 
 const MARKDOWN_EXTENSIONS = new Set(['.md', '.markdown', '.mdown', '.mkd']);
+const TXT_EXTENSION = new Set(['.txt']);
 const AUTOSAVE_DELAY = 650;
 const PREVIEW_DELAY = 180;
 const EMPTY_DOCUMENT = '# Untitled\n\nStart writing Markdown here.\n';
@@ -68,6 +69,11 @@ function debounce(fn, wait) {
 function isMarkdownFile(name) {
   const lower = name.toLowerCase();
   return [...MARKDOWN_EXTENSIONS].some((extension) => lower.endsWith(extension));
+}
+
+function isTxtFile(name) {
+  const lower = name.toLowerCase();
+  return [...TXT_EXTENSION].some((extension) => lower.endsWith(extension));
 }
 
 function escapeHtml(value) {
@@ -276,13 +282,14 @@ class FileSystemModule {
       if (childHandle.kind === 'directory') {
         const node = await this.buildTree(childHandle, childPath, handle);
         children.push(node);
-      } else if (isMarkdownFile(name)) {
+      } else if (isMarkdownFile(name) || isTxtFile(name)) {
         children.push({
           name,
           path: childPath,
           type: 'file',
           handle: childHandle,
-          parentHandle: handle
+          parentHandle: handle,
+          isTxt: isTxtFile(name)
         });
       }
     }
@@ -564,12 +571,34 @@ class PreviewEngine {
   }
 }
 
+class PlaintextPreviewEngine {
+  constructor(container) {
+    this.container = container;
+  }
+
+  render(text) {
+    if (!text.trim()) {
+      this.container.innerHTML = '<div class="empty-state compact">预览区暂无内容</div>';
+      return;
+    }
+    // Escape HTML and wrap in pre to preserve whitespace/line breaks
+    const escaped = text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+    this.container.innerHTML = `<article style="background:#fff;overflow:auto;height:100%;padding:22px 28px 42px;color:#24292f;font-size:var(--content-font-size);line-height:1.65;white-space:pre-wrap;word-wrap:break-word;">${escaped}</article>`;
+  }
+}
+
 class OutlineManager {
   constructor(container, editor, preview) {
     this.container = container;
     this.editor = editor;
     this.preview = preview;
     this.items = [];
+    this.activeIndex = -1;
+    this.onScrollUpdate = null;
   }
 
   update(markdownSource) {
@@ -604,12 +633,13 @@ class OutlineManager {
     const list = document.createElement('ol');
     list.className = 'outline-list';
 
-    this.items.forEach((item) => {
+    this.items.forEach((item, index) => {
       const entry = document.createElement('li');
       entry.style.setProperty('--level', item.level);
       const button = document.createElement('button');
       button.type = 'button';
       button.className = 'outline-item';
+      button.dataset.index = index;
       button.title = `跳转到第 ${item.lineNumber} 行`;
       button.innerHTML = `
         <span class="outline-marker">H${item.level}</span>
@@ -625,6 +655,72 @@ class OutlineManager {
 
     fragment.append(list);
     this.container.replaceChildren(fragment);
+    this.highlightActive(0);
+  }
+
+  highlightActive(activeIndex) {
+    if (activeIndex === this.activeIndex) return;
+    this.activeIndex = activeIndex;
+
+    this.container.querySelectorAll('.outline-item').forEach((item, i) => {
+      item.classList.toggle('active', i === activeIndex);
+    });
+
+    // Auto-scroll outline container to keep active item visible
+    if (activeIndex >= 0) {
+      const activeEl = this.container.querySelector(`.outline-item[data-index="${activeIndex}"]`);
+      if (activeEl) {
+        const container = this.container.querySelector('.outline-host') || this.container;
+        const containerRect = container.getBoundingClientRect();
+        const itemRect = activeEl.getBoundingClientRect();
+        if (itemRect.top < containerRect.top + 42 || itemRect.bottom > containerRect.bottom) {
+          activeEl.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        }
+      }
+    }
+  }
+
+  setupScrollSync() {
+    const previewContainer = this.preview.container;
+    if (!previewContainer) return;
+
+    this.onScrollUpdate = () => {
+      if (!this.items.length) return;
+
+      const scrollTop = previewContainer.scrollTop;
+      const headingElements = previewContainer.querySelectorAll('.preview-heading');
+
+      let activeIndex = -1;
+      for (let i = headingElements.length - 1; i >= 0; i--) {
+        const el = headingElements[i];
+        if (el.offsetTop <= scrollTop + 20) {
+          // Find the matching outline item by lineNumber
+          const sourceLine = Number(el.getAttribute('data-source-line'));
+          const matchIndex = this.items.findIndex((item) => item.lineNumber === sourceLine);
+          if (matchIndex !== -1) {
+            activeIndex = matchIndex;
+            break;
+          }
+        }
+      }
+
+      if (activeIndex >= 0) {
+        this.highlightActive(activeIndex);
+      }
+    };
+
+    previewContainer.addEventListener('scroll', this.onScrollUpdate, { passive: true });
+
+    // Also sync when editor scroll changes (update preview scroll)
+    // and when outline item is clicked (update outline highlight)
+  }
+
+  destroyScrollSync() {
+    const previewContainer = this.preview.container;
+    if (previewContainer && this.onScrollUpdate) {
+      previewContainer.removeEventListener('scroll', this.onScrollUpdate);
+      this.onScrollUpdate = null;
+    }
   }
 }
 
@@ -688,7 +784,8 @@ class TreeView {
 
     const isDirectory = node.type === 'directory';
     const isOpen = this.openPaths.has(node.path);
-    const iconName = isDirectory ? (isOpen ? 'folder-open' : 'folder') : 'file-text';
+    const isTxt = node.isTxt;
+    const iconName = isDirectory ? (isOpen ? 'folder-open' : 'folder') : (isTxt ? 'file-text' : 'file-text');
 
     button.innerHTML = `
       <i class="tree-chevron" data-lucide="${isDirectory ? (isOpen ? 'chevron-down' : 'chevron-right') : 'dot'}"></i>
@@ -777,6 +874,8 @@ class MarkdownStudioApp {
     this.dirty = false;
     this.autosave = true;
     this.saveQueue = Promise.resolve();
+    this.currentFileIsTxt = false;
+    this.plaintextPreview = null;
     this.refreshPreview = debounce(() => {
       const content = this.editor.getContent();
       this.preview.render(content);
@@ -802,7 +901,9 @@ class MarkdownStudioApp {
       onContextMenu: (event, node) => this.openContextMenu(event, node)
     });
 
+    this.plaintextPreview = new PlaintextPreviewEngine(this.root.querySelector('#previewHost'));
     this.bindEvents();
+    this.outline.setupScrollSync();
     this.layout.setMode(prefs.viewMode || 'preview');
     this.layout.setSidebar('left', prefs.leftSidebar !== false);
     this.layout.setSidebar('outline', prefs.outlineSidebar !== false);
@@ -883,7 +984,7 @@ class MarkdownStudioApp {
         </header>
 
         <section class="workspace">
-          <aside class="sidebar">
+          <aside class="sidebar" id="leftSidebar">
             <div class="panel-header">
               <h2>文件</h2>
               <button id="newRootFileButton" class="icon-button small" type="button" title="在根目录新建 Markdown 文件">
@@ -893,6 +994,7 @@ class MarkdownStudioApp {
             <div id="supportNotice" class="support-notice"></div>
             <div id="treeHost" class="tree-host"></div>
           </aside>
+          <div class="resize-handle sidebar-resize-handle" id="leftResizeHandle" title="拖动调整左侧面板宽度"></div>
 
           <section class="main-pane">
             <div class="document-bar">
@@ -917,7 +1019,8 @@ class MarkdownStudioApp {
             </div>
           </section>
 
-          <aside class="outline-pane">
+          <div class="resize-handle outline-resize-handle" id="outlineResizeHandle" title="拖动调整大纲面板宽度"></div>
+          <aside class="outline-pane" id="outlinePane">
             <div class="panel-header">
               <h2>大纲</h2>
             </div>
@@ -1009,6 +1112,51 @@ class MarkdownStudioApp {
         event.preventDefault();
         event.returnValue = '';
       }
+    });
+
+    this.setupResizeHandle('leftResizeHandle', 'leftSidebar', 180, 500);
+    this.setupResizeHandle('outlineResizeHandle', 'outlinePane', 160, 500);
+  }
+
+  setupResizeHandle(handleId, targetId, minWidth, maxWidth) {
+    const handle = this.root.querySelector(`#${handleId}`);
+    const target = this.root.querySelector(`#${targetId}`);
+    if (!handle || !target) return;
+
+    let isDragging = false;
+    let startX = 0;
+    let startWidth = 0;
+
+    const onPointerMove = (event) => {
+      if (!isDragging) return;
+      event.preventDefault();
+      const delta = event.clientX - startX;
+      let newWidth = startWidth + delta;
+      newWidth = Math.max(minWidth, Math.min(maxWidth, newWidth));
+      target.style.width = `${newWidth}px`;
+    };
+
+    const onPointerUp = () => {
+      if (!isDragging) return;
+      isDragging = false;
+      handle.classList.remove('dragging');
+      document.removeEventListener('mousemove', onPointerMove);
+      document.removeEventListener('mouseup', onPointerUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+
+    handle.addEventListener('pointerdown', (event) => {
+      isDragging = true;
+      startX = event.clientX;
+      startWidth = target.getBoundingClientRect().width;
+      handle.setPointerCapture(event.pointerId);
+      handle.classList.add('dragging');
+      document.body.style.cursor = 'col-resize';
+      document.body.style.userSelect = 'none';
+
+      handle.addEventListener('pointermove', onPointerMove);
+      handle.addEventListener('pointerup', onPointerUp);
     });
   }
 
@@ -1184,10 +1332,12 @@ class MarkdownStudioApp {
     this.importedFile = null;
     this.currentFile = null;
     this.snapshotFile = null;
+    this.currentFileIsTxt = false;
     this.lastSavedContent = '';
     this.dirty = false;
     this.editor.setContent('');
     this.preview.render('');
+    this.plaintextPreview.render('');
     this.outline.update('');
     await this.preferences.save({ activePath: '', documentSnapshot: null });
     this.setSaveStatus('idle', '请选择文件');
@@ -1203,6 +1353,7 @@ class MarkdownStudioApp {
       this.currentTree = await this.fs.refreshTree();
       this.tree.setRoot(this.currentTree);
       this.tree.setActivePath(this.currentFile?.path || '');
+      renderIcons();
     } catch (error) {
       if (error.message === 'CANCELLED_BY_USER') {
         return;
@@ -1219,18 +1370,29 @@ class MarkdownStudioApp {
       this.importedFile = null;
       this.snapshotFile = null;
       this.currentFile = node;
+      this.currentFileIsTxt = node.isTxt || false;
       this.lastSavedContent = content;
       this.dirty = false;
-      this.editor.setContent(content);
-      this.preview.render(content);
-      this.outline.update(content);
+
+      if (this.currentFileIsTxt) {
+        this.editor.setContent('');
+        this.plaintextPreview.render(content);
+        this.outline.update('');
+      } else {
+        this.editor.setContent(content);
+        this.preview.render(content);
+        this.outline.update(content);
+      }
+
       this.tree.setActivePath(node.path);
       this.updateFileTitle();
       this.updateStats();
       this.setSaveStatus('saved', '已保存');
       await this.preferences.save({ activePath: node.path });
       this.persistDocumentSnapshot().catch((error) => console.warn('Failed to persist document snapshot', error));
-      this.editor.focus();
+      if (!this.currentFileIsTxt) {
+        this.editor.focus();
+      }
     } catch (error) {
       if (error.message === 'CANCELLED_BY_USER') {
         return;
@@ -1261,6 +1423,21 @@ class MarkdownStudioApp {
     if (shouldSave) {
       await this.saveCurrentFile('manual');
     }
+  }
+
+  switchToMarkdown() {
+    this.editor.setContent('');
+    this.preview.render('');
+    this.outline.update('');
+    this.currentFileIsTxt = false;
+  }
+
+  switchToPlaintext() {
+    this.editor.setContent('');
+    this.preview.render('');
+    this.plaintextPreview.render('');
+    this.outline.update('');
+    this.currentFileIsTxt = true;
   }
 
   async saveCurrentFile(mode) {
@@ -1297,7 +1474,12 @@ class MarkdownStudioApp {
 
   async copyPlainText() {
     try {
-      const plainText = this.preview.toPlainText(this.editor.getContent());
+      let plainText;
+      if (this.currentFileIsTxt) {
+        plainText = this.editor.getContent();
+      } else {
+        plainText = this.preview.toPlainText(this.editor.getContent());
+      }
       await navigator.clipboard.writeText(plainText);
       this.setSaveStatus('saved', '已复制纯文本');
       window.setTimeout(() => {
@@ -1346,14 +1528,20 @@ class MarkdownStudioApp {
   updateFileTitle() {
     const title = this.root.querySelector('#fileTitle');
     const path = this.root.querySelector('#filePath');
-    title.textContent = this.currentFile?.name || this.importedFile?.name || this.snapshotFile?.name || '未命名文档';
-    path.textContent = formatDisplayPath(
+    const currentName = this.currentFile?.name || this.importedFile?.name || this.snapshotFile?.name || '未命名文档';
+    title.textContent = currentName;
+    const displayPath = formatDisplayPath(
       this.currentFile?.path ||
       this.importedFile?.url ||
       this.snapshotFile?.path ||
       this.snapshotFile?.url ||
       ''
-    ) || '选择文件夹后打开 Markdown 文件';
+    );
+    if (this.currentFileIsTxt) {
+      path.textContent = (displayPath || '纯文本文件') + '（TXT）';
+    } else {
+      path.textContent = displayPath || '选择文件夹后打开 Markdown 文件';
+    }
   }
 
   updateStats() {
@@ -1502,10 +1690,12 @@ class MarkdownStudioApp {
       if (this.currentFile?.path === node.path || this.currentFile?.path.startsWith(`${node.path}/`)) {
         this.currentFile = null;
         this.snapshotFile = null;
+        this.currentFileIsTxt = false;
         this.lastSavedContent = '';
         this.dirty = false;
         this.editor.setContent('');
         this.preview.render('');
+        this.plaintextPreview.render('');
         this.outline.update('');
         this.updateFileTitle();
         this.setSaveStatus('idle', '未打开文件');
