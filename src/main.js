@@ -243,7 +243,7 @@ class FileSystemModule {
       mode: 'readwrite'
     });
     await this.handleStore.setRootHandle(this.rootHandle);
-    return this.buildTree(this.rootHandle);
+    return this.buildTree(this.rootHandle, '', null, true);
   }
 
   async restoreDirectory() {
@@ -258,7 +258,7 @@ class FileSystemModule {
     }
 
     this.rootHandle = handle;
-    return this.buildTree(this.rootHandle);
+    return this.buildTree(this.rootHandle, '', null, true);
   }
 
   async verifyPermission(handle) {
@@ -274,21 +274,50 @@ class FileSystemModule {
     }
   }
 
-  async buildTree(handle = this.rootHandle, path = '', parentHandle = null) {
-    const children = [];
+  async buildTree(handle = this.rootHandle, path = '', parentHandle = null, isOpen = false) {
+    const node = {
+      name: handle.name,
+      path: path || '/',
+      type: 'directory',
+      handle,
+      parentHandle,
+      children: [],
+      isLoaded: false,
+      isOpen
+    };
 
-    for await (const [name, childHandle] of handle.entries()) {
-      const childPath = `${path}/${name}`;
+    await this.loadChildren(node);
+    return node;
+  }
+
+  async loadChildren(node) {
+    if (!node || node.type !== 'directory' || node.isLoaded) {
+      return node;
+    }
+
+    const children = [];
+    const basePath = node.path === '/' ? '' : node.path;
+
+    for await (const [name, childHandle] of node.handle.entries()) {
+      const childPath = `${basePath}/${name}`;
       if (childHandle.kind === 'directory') {
-        const node = await this.buildTree(childHandle, childPath, handle);
-        children.push(node);
+        children.push({
+          name,
+          path: childPath,
+          type: 'directory',
+          handle: childHandle,
+          parentHandle: node.handle,
+          children: [],
+          isLoaded: false,
+          isOpen: false
+        });
       } else if (isMarkdownFile(name) || isTxtFile(name)) {
         children.push({
           name,
           path: childPath,
           type: 'file',
           handle: childHandle,
-          parentHandle: handle,
+          parentHandle: node.handle,
           isTxt: isTxtFile(name)
         });
       }
@@ -301,22 +330,65 @@ class FileSystemModule {
       return a.name.localeCompare(b.name, 'zh-Hans-CN', { numeric: true });
     });
 
-    return {
-      name: handle.name,
-      path: path || '/',
-      type: 'directory',
-      handle,
-      parentHandle,
-      children,
-      isOpen: true
-    };
+    node.children = children;
+    node.isLoaded = true;
+    return node;
+  }
+
+  async loadPath(root, path) {
+    if (!root || !path || path === '/') {
+      return root || null;
+    }
+
+    const parts = path.split('/').filter(Boolean);
+    let current = root;
+    await this.loadChildren(current);
+
+    for (const part of parts) {
+      const child = current.children.find((item) => item.name === part);
+      if (!child) {
+        return null;
+      }
+      if (child.path === path) {
+        return child;
+      }
+      if (child.type !== 'directory') {
+        return null;
+      }
+      child.isOpen = true;
+      current = child;
+      await this.loadChildren(current);
+    }
+
+    return current;
+  }
+
+  async findFileByName(node, name) {
+    if (!node) {
+      return null;
+    }
+    if (node.type === 'file' && node.name === name) {
+      return node;
+    }
+    if (node.type !== 'directory') {
+      return null;
+    }
+
+    await this.loadChildren(node);
+    for (const child of node.children) {
+      const found = await this.findFileByName(child, name);
+      if (found) {
+        return found;
+      }
+    }
+    return null;
   }
 
   async refreshTree() {
     if (!this.rootHandle) {
       return null;
     }
-    return this.buildTree(this.rootHandle);
+    return this.buildTree(this.rootHandle, '', null, true);
   }
 
   async readFile(handle) {
@@ -735,7 +807,8 @@ class TreeView {
 
   setRoot(root) {
     this.root = root;
-    this.openPaths = new Set([root.path || '/']);
+    this.openPaths = new Set();
+    this.collectOpenPaths(root);
     this.render();
   }
 
@@ -795,12 +868,7 @@ class TreeView {
 
     button.addEventListener('click', () => {
       if (isDirectory) {
-        if (isOpen) {
-          this.openPaths.delete(node.path);
-        } else {
-          this.openPaths.add(node.path);
-        }
-        this.render();
+        this.callbacks.onToggleDirectory(node);
       } else {
         this.callbacks.onOpenFile(node);
       }
@@ -898,6 +966,7 @@ class MarkdownStudioApp {
     this.outline = new OutlineManager(this.root.querySelector('#outlineHost'), this.editor, this.preview);
     this.tree = new TreeView(this.root.querySelector('#treeHost'), {
       onOpenFile: (node) => this.openFile(node),
+      onToggleDirectory: (node) => this.toggleDirectory(node),
       onContextMenu: (event, node) => this.openContextMenu(event, node)
     });
 
@@ -1244,7 +1313,10 @@ class MarkdownStudioApp {
       this.currentTree = tree;
       this.tree.setRoot(tree);
 
-      const activeNode = activePath ? this.findNodeByPath(tree, activePath) : null;
+      const activeNode = activePath ? await this.fs.loadPath(tree, activePath) : null;
+      if (activeNode) {
+        this.tree.setRoot(tree);
+      }
       if (activeNode?.type === 'file') {
         if (this.snapshotFile?.path === activeNode.path) {
           await this.bindRestoredFile(activeNode, this.snapshotFile.content || '');
@@ -1316,7 +1388,7 @@ class MarkdownStudioApp {
     this.tree.setRoot(this.currentTree);
 
     if (preferredFileName) {
-      const matchingFile = this.findRootFileByName(this.currentTree, preferredFileName) || this.findFileByName(this.currentTree, preferredFileName);
+      const matchingFile = this.findRootFileByName(this.currentTree, preferredFileName) || await this.fs.findFileByName(this.currentTree, preferredFileName);
       if (matchingFile) {
         if (options.preferredContent !== undefined) {
           await this.bindRestoredFile(matchingFile, options.preferredContent);
@@ -1358,6 +1430,26 @@ class MarkdownStudioApp {
       if (error.message === 'CANCELLED_BY_USER') {
         return;
       }
+      this.showError(error);
+    }
+  }
+
+  async toggleDirectory(node) {
+    if (this.tree.openPaths.has(node.path)) {
+      node.isOpen = false;
+      this.tree.openPaths.delete(node.path);
+      this.tree.render();
+      return;
+    }
+
+    try {
+      this.setSaveStatus('saving', '正在加载文件夹');
+      await this.fs.loadChildren(node);
+      node.isOpen = true;
+      this.tree.openPaths.add(node.path);
+      this.tree.render();
+      this.setSaveStatus(this.currentFile ? 'saved' : 'idle', this.currentFile ? '已保存' : '请选择文件');
+    } catch (error) {
       this.showError(error);
     }
   }
@@ -1666,7 +1758,7 @@ class MarkdownStudioApp {
       await this.fs.renameEntry(node, name);
       await this.refreshDirectory();
       if (activeTargetPath) {
-        const renamedNode = this.findNodeByPath(this.currentTree, activeTargetPath);
+        const renamedNode = await this.fs.loadPath(this.currentTree, activeTargetPath);
         if (renamedNode?.type === 'file') {
           await this.openFile(renamedNode);
         }
@@ -1717,40 +1809,8 @@ class MarkdownStudioApp {
     return `${parentPath || ''}/${nextName}`;
   }
 
-  findNodeByPath(node, path) {
-    if (!node) {
-      return null;
-    }
-    if (node.path === path) {
-      return node;
-    }
-    for (const child of node.children || []) {
-      const found = this.findNodeByPath(child, path);
-      if (found) {
-        return found;
-      }
-    }
-    return null;
-  }
-
   findRootFileByName(root, name) {
     return root?.children?.find((child) => child.type === 'file' && child.name === name) || null;
-  }
-
-  findFileByName(node, name) {
-    if (!node) {
-      return null;
-    }
-    if (node.type === 'file' && node.name === name) {
-      return node;
-    }
-    for (const child of node.children || []) {
-      const found = this.findFileByName(child, name);
-      if (found) {
-        return found;
-      }
-    }
-    return null;
   }
 }
 
