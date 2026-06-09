@@ -760,7 +760,13 @@ class OutlineManager {
       if (!this.items.length) return;
 
       const scrollTop = previewContainer.scrollTop;
+      const maxScrollTop = previewContainer.scrollHeight - previewContainer.clientHeight;
       const headingElements = previewContainer.querySelectorAll('.preview-heading');
+
+      if (scrollTop >= maxScrollTop - 2) {
+        this.highlightActive(this.items.length - 1);
+        return;
+      }
 
       let activeIndex = -1;
       for (let i = headingElements.length - 1; i >= 0; i--) {
