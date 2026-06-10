@@ -170,7 +170,8 @@ class PreferenceStore {
       documentSnapshot: null,
       fontSize: 16,
       autosave: true,
-      theme: 'light'
+      theme: 'light',
+      historyCollapsed: false
     };
   }
 
@@ -260,6 +261,13 @@ class DirectoryHandleStore {
     await this.setDirectoryHistory(nextHistory);
     return nextHistory;
   }
+
+  async deleteDirectoryHistoryItem(index) {
+    const history = await this.getDirectoryHistory();
+    const nextHistory = history.filter((_, itemIndex) => itemIndex !== index);
+    await this.setDirectoryHistory(nextHistory);
+    return nextHistory;
+  }
 }
 
 class FileSystemModule {
@@ -309,6 +317,10 @@ class FileSystemModule {
 
   async getDirectoryHistory() {
     return this.handleStore.getDirectoryHistory();
+  }
+
+  async deleteDirectoryHistoryItem(index) {
+    return this.handleStore.deleteDirectoryHistoryItem(index);
   }
 
   async verifyPermission(handle) {
@@ -1047,6 +1059,7 @@ class MarkdownStudioApp {
     this.saveQueue = Promise.resolve();
     this.currentFileIsTxt = false;
     this.directoryHistory = [];
+    this.historyCollapsed = false;
     this.plaintextPreview = null;
     this.refreshPreview = debounce(() => {
       const content = this.editor.getContent();
@@ -1064,6 +1077,7 @@ class MarkdownStudioApp {
   async init() {
     const prefs = await this.preferences.load();
     this.autosave = Boolean(prefs.autosave);
+    this.historyCollapsed = Boolean(prefs.historyCollapsed);
     this.layout = new LayoutController(this.root.querySelector('.studio-shell'));
     this.editor = new EditorCore(this.root.querySelector('#editorHost'));
     this.preview = new PreviewEngine(this.root.querySelector('#previewHost'));
@@ -1166,8 +1180,11 @@ class MarkdownStudioApp {
               </button>
             </div>
             <div id="supportNotice" class="support-notice"></div>
-            <section class="history-section" aria-label="历史打开目录">
-              <div class="history-title">历史目录</div>
+            <section id="historySection" class="history-section" aria-label="历史打开目录">
+              <button id="historyToggleButton" class="history-toggle" type="button" title="展开或折叠历史目录" aria-expanded="true">
+                <i data-lucide="chevron-down"></i>
+                <span>历史目录</span>
+              </button>
               <div id="historyHost" class="history-host"></div>
             </section>
             <div id="treeHost" class="tree-host"></div>
@@ -1222,6 +1239,7 @@ class MarkdownStudioApp {
     this.root.querySelector('#saveButton').addEventListener('click', () => this.saveCurrentFile('manual'));
     this.root.querySelector('#newRootFileButton').addEventListener('click', () => this.createInRoot('file'));
     this.root.querySelector('#copyPlainTextButton').addEventListener('click', () => this.copyPlainText());
+    this.root.querySelector('#historyToggleButton').addEventListener('click', () => this.toggleDirectoryHistory());
     this.root.querySelector('#decreaseFontButton').addEventListener('click', () => this.adjustFontSize(-1));
     this.root.querySelector('#increaseFontButton').addEventListener('click', () => this.adjustFontSize(1));
     this.root.querySelector('#fontSizeInput').addEventListener('change', (event) => {
@@ -1480,18 +1498,28 @@ class MarkdownStudioApp {
   }
 
   renderDirectoryHistory() {
+    const section = this.root.querySelector('#historySection');
+    const toggle = this.root.querySelector('#historyToggleButton');
     const host = this.root.querySelector('#historyHost');
-    if (!host) {
+    if (!section || !toggle || !host) {
       return;
     }
 
+    section.dataset.collapsed = this.historyCollapsed ? 'true' : 'false';
+    toggle.setAttribute('aria-expanded', String(!this.historyCollapsed));
+    toggle.querySelector('i')?.setAttribute('data-lucide', this.historyCollapsed ? 'chevron-right' : 'chevron-down');
+
     if (!this.directoryHistory.length) {
       host.innerHTML = '<div class="empty-state compact">暂无历史目录</div>';
+      renderIcons();
       return;
     }
 
     const fragment = document.createDocumentFragment();
     this.directoryHistory.forEach((item, index) => {
+      const row = document.createElement('div');
+      row.className = 'history-row';
+
       const button = document.createElement('button');
       button.type = 'button';
       button.className = 'history-item';
@@ -1501,11 +1529,44 @@ class MarkdownStudioApp {
         <span>${escapeHtml(item.name)}</span>
       `;
       button.addEventListener('click', () => this.openHistoryDirectory(index));
-      fragment.append(button);
+
+      const deleteButton = document.createElement('button');
+      deleteButton.type = 'button';
+      deleteButton.className = 'history-delete';
+      deleteButton.title = `删除历史目录：${item.name}`;
+      deleteButton.innerHTML = '<i data-lucide="trash-2"></i>';
+      deleteButton.addEventListener('click', (event) => {
+        event.stopPropagation();
+        this.deleteHistoryDirectory(index);
+      });
+
+      row.append(button, deleteButton);
+      fragment.append(row);
     });
 
     host.replaceChildren(fragment);
     renderIcons();
+  }
+
+  async toggleDirectoryHistory() {
+    this.historyCollapsed = !this.historyCollapsed;
+    await this.preferences.save({ historyCollapsed: this.historyCollapsed });
+    this.renderDirectoryHistory();
+  }
+
+  async deleteHistoryDirectory(index) {
+    const item = this.directoryHistory[index];
+    if (!item) {
+      return;
+    }
+
+    try {
+      this.directoryHistory = await this.fs.deleteDirectoryHistoryItem(index);
+      this.renderDirectoryHistory();
+      this.setSaveStatus('idle', `已删除历史目录：${item.name}`);
+    } catch (error) {
+      this.showError(error);
+    }
   }
 
   async openHistoryDirectory(index) {

@@ -351,11 +351,25 @@ svg {
   border-bottom: 1px solid var(--border);
 }
 
-.history-title {
-  margin: 0 4px 6px;
+.history-toggle {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  align-items: center;
+  width: 100%;
+  min-height: 28px;
+  margin: 0 0 6px;
+  padding: 0 4px;
+  border-radius: 6px;
+  background: transparent;
   color: var(--text-muted);
   font-size: 12px;
   font-weight: 650;
+  text-align: left;
+  cursor: pointer;
+}
+
+.history-toggle:hover {
+  background: #e9ede5;
 }
 
 .history-host {
@@ -367,25 +381,53 @@ svg {
   padding-bottom: 8px;
 }
 
-.history-item {
+.history-section[data-collapsed="true"] .history-host {
+  display: none;
+}
+
+.history-row {
   display: grid;
-  grid-template-columns: 18px minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) 28px;
   align-items: center;
-  width: 100%;
+  gap: 2px;
+}
+
+.history-item,
+.history-delete {
+  display: inline-grid;
+  align-items: center;
   min-height: 30px;
-  padding: 0 8px;
   border-radius: 6px;
   background: transparent;
   color: #2d322d;
-  text-align: left;
   cursor: pointer;
 }
 
-.history-item:hover {
+.history-item {
+  grid-template-columns: 18px minmax(0, 1fr);
+  width: 100%;
+  padding: 0 8px;
+  text-align: left;
+}
+
+.history-delete {
+  justify-content: center;
+  width: 28px;
+  padding: 0;
+  color: var(--text-muted);
+}
+
+.history-item:hover,
+.history-delete:hover {
   background: #e9ede5;
 }
 
-.history-item span {
+.history-delete:hover {
+  color: var(--danger);
+}
+
+.history-item span,
+.history-toggle span {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
