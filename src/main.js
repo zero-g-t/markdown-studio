@@ -188,6 +188,8 @@ class DirectoryHandleStore {
     this.dbName = 'markdown-studio';
     this.storeName = 'handles';
     this.rootKey = 'root-directory';
+    this.historyKey = 'directory-history';
+    this.maxHistory = 10;
   }
 
   async openDb() {
@@ -222,6 +224,42 @@ class DirectoryHandleStore {
       transaction.oncomplete = () => db.close();
     });
   }
+
+  async getDirectoryHistory() {
+    const db = await this.openDb();
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction(this.storeName, 'readonly');
+      const request = transaction.objectStore(this.storeName).get(this.historyKey);
+      request.onsuccess = () => resolve(request.result || []);
+      request.onerror = () => reject(request.error);
+      transaction.oncomplete = () => db.close();
+    });
+  }
+
+  async setDirectoryHistory(history) {
+    const db = await this.openDb();
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction(this.storeName, 'readwrite');
+      const request = transaction.objectStore(this.storeName).put(history, this.historyKey);
+      request.onsuccess = () => resolve();
+      request.onerror = () => reject(request.error);
+      transaction.oncomplete = () => db.close();
+    });
+  }
+
+  async addDirectoryToHistory(handle) {
+    const history = await this.getDirectoryHistory();
+    const nextHistory = [
+      {
+        name: handle.name,
+        handle,
+        updatedAt: Date.now()
+      },
+      ...history.filter((item) => item.name !== handle.name)
+    ].slice(0, this.maxHistory);
+    await this.setDirectoryHistory(nextHistory);
+    return nextHistory;
+  }
 }
 
 class FileSystemModule {
@@ -244,6 +282,7 @@ class FileSystemModule {
       mode: 'readwrite'
     });
     await this.handleStore.setRootHandle(this.rootHandle);
+    await this.handleStore.addDirectoryToHistory(this.rootHandle);
     return this.buildTree(this.rootHandle, '', null, true);
   }
 
@@ -253,13 +292,23 @@ class FileSystemModule {
       return null;
     }
 
+    return this.openDirectoryHandle(handle);
+  }
+
+  async openDirectoryHandle(handle) {
     const hasPermission = await this.verifyPermission(handle);
     if (!hasPermission) {
       return null;
     }
 
     this.rootHandle = handle;
+    await this.handleStore.setRootHandle(handle);
+    await this.handleStore.addDirectoryToHistory(handle);
     return this.buildTree(this.rootHandle, '', null, true);
+  }
+
+  async getDirectoryHistory() {
+    return this.handleStore.getDirectoryHistory();
   }
 
   async verifyPermission(handle) {
@@ -997,6 +1046,7 @@ class MarkdownStudioApp {
     this.autosave = true;
     this.saveQueue = Promise.resolve();
     this.currentFileIsTxt = false;
+    this.directoryHistory = [];
     this.plaintextPreview = null;
     this.refreshPreview = debounce(() => {
       const content = this.editor.getContent();
@@ -1046,6 +1096,7 @@ class MarkdownStudioApp {
       }
       await this.restorePreviousDirectory(prefs.activePath);
     }
+    await this.loadDirectoryHistory();
     this.updateFileTitle();
     this.updateStats();
     this.setSupportNotice();
@@ -1115,6 +1166,10 @@ class MarkdownStudioApp {
               </button>
             </div>
             <div id="supportNotice" class="support-notice"></div>
+            <section class="history-section" aria-label="历史打开目录">
+              <div class="history-title">历史目录</div>
+              <div id="historyHost" class="history-host"></div>
+            </section>
             <div id="treeHost" class="tree-host"></div>
           </aside>
           <div class="resize-handle sidebar-resize-handle" id="leftResizeHandle" title="拖动调整左侧面板宽度"></div>
@@ -1237,11 +1292,11 @@ class MarkdownStudioApp {
       }
     });
 
-    this.setupResizeHandle('leftResizeHandle', 'leftSidebar', 180, 500);
-    this.setupResizeHandle('outlineResizeHandle', 'outlinePane', 160, 500);
+    this.setupResizeHandle('leftResizeHandle', 'leftSidebar', 180, 500, 'left');
+    this.setupResizeHandle('outlineResizeHandle', 'outlinePane', 160, 500, 'right');
   }
 
-  setupResizeHandle(handleId, targetId, minWidth, maxWidth) {
+  setupResizeHandle(handleId, targetId, minWidth, maxWidth, side = 'left') {
     const handle = this.root.querySelector(`#${handleId}`);
     const target = this.root.querySelector(`#${targetId}`);
     if (!handle || !target) return;
@@ -1249,12 +1304,18 @@ class MarkdownStudioApp {
     let isDragging = false;
     let startX = 0;
     let startWidth = 0;
+    let rightEdge = 0;
 
     const onPointerMove = (event) => {
       if (!isDragging) return;
       event.preventDefault();
-      const delta = event.clientX - startX;
-      let newWidth = startWidth + delta;
+      let newWidth;
+      if (side === 'right') {
+        newWidth = rightEdge - event.clientX;
+      } else {
+        const delta = event.clientX - startX;
+        newWidth = startWidth + delta;
+      }
       newWidth = Math.max(minWidth, Math.min(maxWidth, newWidth));
       target.style.width = `${newWidth}px`;
     };
@@ -1272,7 +1333,9 @@ class MarkdownStudioApp {
     handle.addEventListener('pointerdown', (event) => {
       isDragging = true;
       startX = event.clientX;
-      startWidth = target.getBoundingClientRect().width;
+      const targetRect = target.getBoundingClientRect();
+      startWidth = targetRect.width;
+      rightEdge = targetRect.right;
       handle.setPointerCapture(event.pointerId);
       handle.classList.add('dragging');
       document.body.style.cursor = 'col-resize';
@@ -1405,6 +1468,70 @@ class MarkdownStudioApp {
     this.persistDocumentSnapshot().catch((error) => console.warn('Failed to persist document snapshot', error));
   }
 
+  async loadDirectoryHistory() {
+    try {
+      this.directoryHistory = await this.fs.getDirectoryHistory();
+      this.renderDirectoryHistory();
+    } catch (error) {
+      console.warn('Failed to load directory history', error);
+      this.directoryHistory = [];
+      this.renderDirectoryHistory();
+    }
+  }
+
+  renderDirectoryHistory() {
+    const host = this.root.querySelector('#historyHost');
+    if (!host) {
+      return;
+    }
+
+    if (!this.directoryHistory.length) {
+      host.innerHTML = '<div class="empty-state compact">暂无历史目录</div>';
+      return;
+    }
+
+    const fragment = document.createDocumentFragment();
+    this.directoryHistory.forEach((item, index) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'history-item';
+      button.title = `打开历史目录：${item.name}`;
+      button.innerHTML = `
+        <i data-lucide="folder-open"></i>
+        <span>${escapeHtml(item.name)}</span>
+      `;
+      button.addEventListener('click', () => this.openHistoryDirectory(index));
+      fragment.append(button);
+    });
+
+    host.replaceChildren(fragment);
+    renderIcons();
+  }
+
+  async openHistoryDirectory(index) {
+    const item = this.directoryHistory[index];
+    if (!item?.handle) {
+      return;
+    }
+
+    try {
+      await this.ensureSafeFileSwitch();
+      this.setSaveStatus('saving', '正在打开历史目录');
+      const tree = await this.fs.openDirectoryHandle(item.handle);
+      if (!tree) {
+        this.setSaveStatus('error', '历史目录需要重新授权');
+        return;
+      }
+      await this.applyPickedDirectory(tree);
+      await this.loadDirectoryHistory();
+    } catch (error) {
+      if (error.message === 'CANCELLED_BY_USER') {
+        return;
+      }
+      this.showError(error);
+    }
+  }
+
   async openDirectory(options = {}) {
     const unboundSource = !this.currentFile && (this.importedFile || this.snapshotFile);
     const preferredFileName = options.preferredFileName || (unboundSource ? (this.importedFile?.name || this.snapshotFile?.name) : '');
@@ -1421,6 +1548,7 @@ class MarkdownStudioApp {
         preferredFileName,
         preferredContent
       });
+      await this.loadDirectoryHistory();
     } catch (error) {
       if (error.name === 'AbortError') {
         const statusText = this.currentFile

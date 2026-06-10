@@ -345,6 +345,53 @@ svg {
   padding: 8px;
 }
 
+.history-section {
+  flex: 0 0 auto;
+  padding: 8px 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.history-title {
+  margin: 0 4px 6px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.history-host {
+  display: flex;
+  max-height: 150px;
+  flex-direction: column;
+  gap: 2px;
+  overflow: auto;
+  padding-bottom: 8px;
+}
+
+.history-item {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: center;
+  width: 100%;
+  min-height: 30px;
+  padding: 0 8px;
+  border-radius: 6px;
+  background: transparent;
+  color: #2d322d;
+  text-align: left;
+  cursor: pointer;
+}
+
+.history-item:hover {
+  background: #e9ede5;
+}
+
+.history-item span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .tree-root {
   min-width: 100%;
 }
