@@ -593,6 +593,41 @@ svg {
   color: inherit;
 }
 
+.markdown-body .mermaid-diagram {
+  margin: 0 0 1em;
+  overflow: auto;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.markdown-body .mermaid-diagram pre.mermaid-source {
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  text-align: center;
+}
+
+.markdown-body .mermaid-diagram svg {
+  display: block;
+  width: 100%;
+  min-width: 640px;
+  max-width: none;
+  height: auto;
+  min-height: 180px;
+}
+
+.markdown-body .mermaid-error {
+  padding: 12px;
+  border-radius: 6px;
+  background: #fff8dc;
+  color: var(--warning);
+  text-align: left;
+  white-space: pre-wrap;
+}
+
 .markdown-body blockquote {
   padding-left: 14px;
   border-left: 4px solid #c8d2c1;

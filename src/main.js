@@ -1,6 +1,7 @@
 import './styles.css';
 import MarkdownIt from 'markdown-it';
 import markdownItTaskLists from 'markdown-it-task-lists';
+import mermaid from 'mermaid';
 import { basicSetup, EditorView } from 'codemirror';
 import { markdown } from '@codemirror/lang-markdown';
 import { EditorState, StateEffect, StateField } from '@codemirror/state';
@@ -596,6 +597,22 @@ class PreviewEngine {
       labelAfter: true
     });
 
+    mermaid.initialize({
+      startOnLoad: false,
+      securityLevel: 'strict',
+      theme: 'default'
+    });
+
+    const originalFence = this.md.renderer.rules.fence || ((tokens, idx, options, env, self) => self.renderToken(tokens, idx, options));
+    this.md.renderer.rules.fence = (tokens, idx, options, env, self) => {
+      const token = tokens[idx];
+      const language = token.info.trim().split(/\s+/)[0].toLowerCase();
+      if (language === 'mermaid') {
+        return `<div class="mermaid-diagram"><pre class="mermaid-source">${escapeHtml(token.content)}</pre></div>`;
+      }
+      return originalFence(tokens, idx, options, env, self);
+    };
+
     const originalLinkOpen = this.md.renderer.rules.link_open || ((tokens, idx, options, env, self) => self.renderToken(tokens, idx, options));
     this.md.renderer.rules.link_open = (tokens, idx, options, env, self) => {
       const token = tokens[idx];
@@ -621,7 +638,38 @@ class PreviewEngine {
       this.container.innerHTML = '<div class="empty-state compact">预览区暂无内容</div>';
       return;
     }
+
     this.container.innerHTML = this.md.render(markdownSource);
+    this.renderMermaidDiagrams();
+  }
+
+  async renderMermaidDiagrams() {
+    const sources = Array.from(this.container.querySelectorAll('.mermaid-source'));
+    if (!sources.length) {
+      return;
+    }
+
+    await Promise.all(sources.map(async (source, index) => {
+      const diagramSource = source.textContent || '';
+      const wrapper = source.closest('.mermaid-diagram');
+      if (!wrapper) {
+        return;
+      }
+
+      try {
+        const id = `mermaid-${Date.now()}-${index}`;
+        const { svg, bindFunctions } = await mermaid.render(id, diagramSource);
+        if (source.isConnected) {
+          wrapper.innerHTML = svg;
+          bindFunctions?.(wrapper);
+        }
+      } catch (error) {
+        console.warn('Failed to render Mermaid diagram', error);
+        if (source.isConnected) {
+          source.classList.add('mermaid-error');
+        }
+      }
+    }));
   }
 
   toPlainText(markdownSource) {
