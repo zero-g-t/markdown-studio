@@ -600,6 +600,16 @@ class EditorCore {
     this.emitCursor();
   }
 
+  resetScroll() {
+    this.view.dispatch({
+      selection: { anchor: 0 },
+      scrollIntoView: true,
+      effects: setLineHighlight.of(null)
+    });
+    this.view.scrollDOM.scrollTop = 0;
+    this.view.scrollDOM.scrollLeft = 0;
+  }
+
   getContent() {
     return this.view.state.doc.toString();
   }
@@ -750,6 +760,11 @@ class PreviewEngine {
     target.classList.add('preview-heading-flash');
     window.setTimeout(() => target.classList.remove('preview-heading-flash'), 1200);
   }
+
+  resetScroll() {
+    this.container.scrollTop = 0;
+    this.container.scrollLeft = 0;
+  }
 }
 
 class PlaintextPreviewEngine {
@@ -769,6 +784,11 @@ class PlaintextPreviewEngine {
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;');
     this.container.innerHTML = `<article style="background:#fff;overflow:auto;height:100%;padding:22px 28px 42px;color:#24292f;font-size:var(--content-font-size);line-height:1.65;white-space:pre-wrap;word-wrap:break-word;">${escaped}</article>`;
+  }
+
+  resetScroll() {
+    this.container.scrollTop = 0;
+    this.container.scrollLeft = 0;
   }
 }
 
@@ -806,6 +826,7 @@ class OutlineManager {
 
   render() {
     if (!this.items.length) {
+      this.activeIndex = -1;
       this.container.innerHTML = '<div class="empty-state compact">没有可用标题</div>';
       return;
     }
@@ -836,7 +857,13 @@ class OutlineManager {
 
     fragment.append(list);
     this.container.replaceChildren(fragment);
+    this.activeIndex = -1;
     this.highlightActive(0);
+  }
+
+  resetScroll() {
+    this.container.scrollTop = 0;
+    this.container.scrollLeft = 0;
   }
 
   highlightActive(activeIndex) {
@@ -1698,6 +1725,8 @@ class MarkdownStudioApp {
   }
 
   async openFile(node) {
+    const shouldResetScroll = node.path !== this.currentFile?.path;
+
     try {
       await this.ensureSafeFileSwitch();
       this.setSaveStatus('saving', '正在打开文件');
@@ -1719,6 +1748,10 @@ class MarkdownStudioApp {
         this.outline.update(content);
       }
 
+      if (shouldResetScroll) {
+        this.resetDocumentScroll();
+      }
+
       this.tree.setActivePath(node.path);
       this.updateFileTitle();
       this.updateStats();
@@ -1734,6 +1767,13 @@ class MarkdownStudioApp {
       }
       this.showError(error);
     }
+  }
+
+  resetDocumentScroll() {
+    this.editor.resetScroll();
+    this.preview.resetScroll();
+    this.plaintextPreview.resetScroll();
+    this.outline.resetScroll();
   }
 
   async ensureSafeFileSwitch() {
