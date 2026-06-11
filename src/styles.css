@@ -610,16 +610,35 @@ svg {
 }
 
 .preview-pane {
+  position: relative;
   background: #fff;
 }
 
 .markdown-body {
   height: 100%;
   overflow: auto;
-  padding: 22px 28px 42px;
+  padding: 22px 28px 58px;
   color: #24292f;
   font-size: var(--content-font-size);
   line-height: 1.65;
+}
+
+.preview-word-count {
+  position: absolute;
+  right: 14px;
+  bottom: 12px;
+  z-index: 2;
+  max-width: calc(100% - 28px);
+  padding: 5px 9px;
+  border: 1px solid rgba(188, 197, 183, 0.85);
+  border-radius: 6px;
+  background: rgba(250, 251, 247, 0.94);
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.2;
+  box-shadow: 0 4px 14px rgba(39, 48, 40, 0.08);
+  pointer-events: none;
+  white-space: nowrap;
 }
 
 .markdown-body h1,
@@ -896,6 +915,6 @@ svg {
   }
 
   .markdown-body {
-    padding: 18px 18px 34px;
+    padding: 18px 18px 58px;
   }
 }

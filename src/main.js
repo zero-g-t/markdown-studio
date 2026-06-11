@@ -102,6 +102,10 @@ function htmlToPlainText(html) {
     .trim();
 }
 
+function countTotalCharacters(content) {
+  return Array.from(content.replace(/\s/g, '')).length;
+}
+
 function formatDisplayPath(pathOrUrl) {
   if (!pathOrUrl) {
     return '';
@@ -1237,6 +1241,7 @@ class MarkdownStudioApp {
               </section>
               <section class="preview-pane" aria-label="Markdown 预览">
                 <article id="previewHost" class="markdown-body"></article>
+                <div id="previewWordCount" class="preview-word-count" aria-live="polite">总字数：0</div>
               </section>
             </div>
           </section>
@@ -1684,6 +1689,7 @@ class MarkdownStudioApp {
     await this.preferences.save({ activePath: '', documentSnapshot: null });
     this.setSaveStatus('idle', '请选择文件');
     this.updateFileTitle();
+    this.updateStats();
     renderIcons();
   }
 
@@ -1805,6 +1811,7 @@ class MarkdownStudioApp {
     this.preview.render('');
     this.outline.update('');
     this.currentFileIsTxt = false;
+    this.updateStats();
   }
 
   switchToPlaintext() {
@@ -1813,6 +1820,7 @@ class MarkdownStudioApp {
     this.plaintextPreview.render('');
     this.outline.update('');
     this.currentFileIsTxt = true;
+    this.updateStats();
   }
 
   async saveCurrentFile(mode) {
@@ -1925,10 +1933,12 @@ class MarkdownStudioApp {
     const line = this.editor.view.state.doc.lineAt(selection.head);
     const column = selection.head - line.from + 1;
     const words = content.trim() ? content.trim().split(/\s+/).length : 0;
+    const previewContent = this.currentFileIsTxt && !content ? this.lastSavedContent : content;
 
     this.root.querySelector('#statLines').textContent = `Lines: ${this.editor.view.state.doc.lines}`;
     this.root.querySelector('#statWords').textContent = `Words: ${words}`;
     this.root.querySelector('#statCursor').textContent = `Cursor: ${line.number}:${column}`;
+    this.root.querySelector('#previewWordCount').textContent = `总字数：${countTotalCharacters(previewContent)}`;
   }
 
   setSaveStatus(type, text) {
@@ -2073,6 +2083,7 @@ class MarkdownStudioApp {
         this.plaintextPreview.render('');
         this.outline.update('');
         this.updateFileTitle();
+        this.updateStats();
         this.setSaveStatus('idle', '未打开文件');
         await this.preferences.save({ activePath: '', documentSnapshot: null });
       }
