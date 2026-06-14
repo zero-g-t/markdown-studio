@@ -506,6 +506,8 @@ svg {
   display: flex;
   flex: 0 0 auto;
   align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 8px;
 }
 
@@ -516,6 +518,19 @@ svg {
 }
 
 .document-action:hover {
+  border-color: var(--border-strong);
+  background: var(--surface-muted);
+}
+
+.preview-refresh-toggle {
+  min-height: 34px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-subtle);
+}
+
+.preview-refresh-toggle:hover {
   border-color: var(--border-strong);
   background: var(--surface-muted);
 }

@@ -174,6 +174,7 @@ class PreferenceStore {
       documentSnapshot: null,
       fontSize: 16,
       autosave: true,
+      previewAutoRefresh: true,
       theme: 'light',
       historyCollapsed: false
     };
@@ -942,6 +943,42 @@ class OutlineManager {
   }
 }
 
+class EditorPreviewScrollSync {
+  constructor(editor, preview) {
+    this.editor = editor;
+    this.preview = preview;
+    this.syncing = false;
+    this.onEditorScroll = () => this.syncFrom(this.editor.view.scrollDOM, this.preview.container);
+    this.onPreviewScroll = () => this.syncFrom(this.preview.container, this.editor.view.scrollDOM);
+  }
+
+  setup() {
+    this.editor.view.scrollDOM.addEventListener('scroll', this.onEditorScroll, { passive: true });
+    this.preview.container.addEventListener('scroll', this.onPreviewScroll, { passive: true });
+  }
+
+  syncFrom(source, target) {
+    if (this.syncing || !source || !target) {
+      return;
+    }
+
+    const sourceMax = source.scrollHeight - source.clientHeight;
+    const targetMax = target.scrollHeight - target.clientHeight;
+    if (sourceMax <= 0 || targetMax <= 0) {
+      return;
+    }
+
+    const ratio = source.scrollTop / sourceMax;
+    this.syncing = true;
+    target.scrollTop = ratio * targetMax;
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        this.syncing = false;
+      });
+    });
+  }
+}
+
 class TreeView {
   constructor(container, callbacks) {
     this.container = container;
@@ -1087,15 +1124,16 @@ class MarkdownStudioApp {
     this.lastSavedContent = '';
     this.dirty = false;
     this.autosave = true;
+    this.previewAutoRefresh = true;
     this.saveQueue = Promise.resolve();
     this.currentFileIsTxt = false;
     this.directoryHistory = [];
     this.historyCollapsed = false;
     this.plaintextPreview = null;
     this.refreshPreview = debounce(() => {
-      const content = this.editor.getContent();
-      this.preview.render(content);
-      this.outline.update(content);
+      if (this.previewAutoRefresh) {
+        this.renderCurrentPreview();
+      }
     }, PREVIEW_DELAY);
     this.queueAutosave = debounce(() => this.saveCurrentFile('auto'), AUTOSAVE_DELAY);
     this.queueSnapshotSave = debounce(() => {
@@ -1108,11 +1146,13 @@ class MarkdownStudioApp {
   async init() {
     const prefs = await this.preferences.load();
     this.autosave = Boolean(prefs.autosave);
+    this.previewAutoRefresh = prefs.previewAutoRefresh !== false;
     this.historyCollapsed = Boolean(prefs.historyCollapsed);
     this.layout = new LayoutController(this.root.querySelector('.studio-shell'));
     this.editor = new EditorCore(this.root.querySelector('#editorHost'));
     this.preview = new PreviewEngine(this.root.querySelector('#previewHost'));
     this.outline = new OutlineManager(this.root.querySelector('#outlineHost'), this.editor, this.preview);
+    this.scrollSync = new EditorPreviewScrollSync(this.editor, this.preview);
     this.tree = new TreeView(this.root.querySelector('#treeHost'), {
       onOpenFile: (node) => this.openFile(node),
       onToggleDirectory: (node) => this.toggleDirectory(node),
@@ -1122,11 +1162,13 @@ class MarkdownStudioApp {
     this.plaintextPreview = new PlaintextPreviewEngine(this.root.querySelector('#previewHost'));
     this.bindEvents();
     this.outline.setupScrollSync();
+    this.scrollSync.setup();
     this.layout.setMode(prefs.viewMode || 'preview');
     this.layout.setSidebar('left', prefs.leftSidebar !== false);
     this.layout.setSidebar('outline', prefs.outlineSidebar !== false);
     this.setFontSize(prefs.fontSize || 16, false);
     this.setAutosave(this.autosave, false);
+    this.setPreviewAutoRefresh(this.previewAutoRefresh, false);
     const importedFile = await this.consumeImportedFile();
     if (importedFile) {
       this.loadImportedFile(importedFile);
@@ -1229,6 +1271,14 @@ class MarkdownStudioApp {
                 <p id="filePath">选择文件夹后打开 Markdown 文件</p>
               </div>
               <div class="document-actions">
+                <button id="manualPreviewRefreshButton" class="tool-button document-action" type="button" title="立即刷新预览">
+                  <i data-lucide="refresh-cw"></i>
+                  <span>刷新预览</span>
+                </button>
+                <label class="toggle preview-refresh-toggle" title="编辑内容变更后自动刷新预览">
+                  <input id="previewAutoRefreshToggle" type="checkbox" />
+                  <span>自动刷新</span>
+                </label>
                 <button id="copyPlainTextButton" class="tool-button document-action" type="button" title="复制不带 Markdown 标记的纯文本">
                   <i data-lucide="copy"></i>
                   <span>复制纯文本</span>
@@ -1270,6 +1320,7 @@ class MarkdownStudioApp {
     this.root.querySelector('#refreshButton').addEventListener('click', () => this.refreshDirectory());
     this.root.querySelector('#saveButton').addEventListener('click', () => this.saveCurrentFile('manual'));
     this.root.querySelector('#newRootFileButton').addEventListener('click', () => this.createInRoot('file'));
+    this.root.querySelector('#manualPreviewRefreshButton').addEventListener('click', () => this.renderCurrentPreview({ notify: true }));
     this.root.querySelector('#copyPlainTextButton').addEventListener('click', () => this.copyPlainText());
     this.root.querySelector('#historyToggleButton').addEventListener('click', () => this.toggleDirectoryHistory());
     this.root.querySelector('#decreaseFontButton').addEventListener('click', () => this.adjustFontSize(-1));
@@ -1305,6 +1356,14 @@ class MarkdownStudioApp {
       await this.preferences.save({ autosave: event.target.checked });
     });
 
+    this.root.querySelector('#previewAutoRefreshToggle').addEventListener('change', async (event) => {
+      this.setPreviewAutoRefresh(event.target.checked);
+      await this.preferences.save({ previewAutoRefresh: event.target.checked });
+      if (event.target.checked) {
+        this.renderCurrentPreview();
+      }
+    });
+
     this.editor.onChange((content) => {
       this.dirty = content !== this.lastSavedContent;
       const dirtyText = this.importedFile
@@ -1314,7 +1373,9 @@ class MarkdownStudioApp {
         ? '只读导入'
         : (this.snapshotFile ? '等待恢复文件' : '已保存');
       this.setSaveStatus(this.dirty ? 'dirty' : 'saved', this.dirty ? dirtyText : savedText);
-      this.refreshPreview();
+      if (this.previewAutoRefresh) {
+        this.refreshPreview();
+      }
       this.updateStats();
       this.queueSnapshotSave();
       if (this.autosave && this.currentFile) {
@@ -1776,6 +1837,7 @@ class MarkdownStudioApp {
   }
 
   resetDocumentScroll() {
+    this.scrollSync.syncing = false;
     this.editor.resetScroll();
     this.preview.resetScroll();
     this.plaintextPreview.resetScroll();
@@ -1905,6 +1967,25 @@ class MarkdownStudioApp {
       toggle.checked = enabled;
     } else {
       toggle.checked = this.autosave;
+    }
+  }
+
+  setPreviewAutoRefresh(enabled, updateElement = true) {
+    this.previewAutoRefresh = enabled;
+    const toggle = this.root.querySelector('#previewAutoRefreshToggle');
+    if (toggle && updateElement) {
+      toggle.checked = enabled;
+    } else if (toggle) {
+      toggle.checked = this.previewAutoRefresh;
+    }
+  }
+
+  renderCurrentPreview(options = {}) {
+    const content = this.editor.getContent();
+    this.preview.render(content);
+    this.outline.update(content);
+    if (options.notify) {
+      this.setSaveStatus(this.dirty ? 'dirty' : 'saved', this.dirty ? '预览已刷新' : '预览已刷新');
     }
   }
 
