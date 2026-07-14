@@ -2,6 +2,7 @@ import './styles.css';
 import MarkdownIt from 'markdown-it';
 import markdownItTaskLists from 'markdown-it-task-lists';
 import mermaid from 'mermaid';
+import { resolveFileResourceUrl, resolveWorkspaceResourcePath } from './resource-paths.js';
 import { basicSetup, EditorView } from 'codemirror';
 import { markdown } from '@codemirror/lang-markdown';
 import { EditorState, StateEffect, StateField } from '@codemirror/state';
@@ -463,6 +464,27 @@ class FileSystemModule {
     return file.text();
   }
 
+  async readFileByPathParts(parts) {
+    if (!this.rootHandle || !Array.isArray(parts) || !parts.length) {
+      return null;
+    }
+
+    try {
+      let directoryHandle = this.rootHandle;
+      for (const part of parts.slice(0, -1)) {
+        directoryHandle = await directoryHandle.getDirectoryHandle(part);
+      }
+
+      const fileHandle = await directoryHandle.getFileHandle(parts.at(-1));
+      return fileHandle.getFile();
+    } catch (error) {
+      if (['NotFoundError', 'TypeMismatchError'].includes(error.name)) {
+        return null;
+      }
+      throw error;
+    }
+  }
+
   async writeFile(handle, content) {
     const writable = await handle.createWritable();
     await writable.write(content);
@@ -660,8 +682,11 @@ class EditorCore {
 }
 
 class PreviewEngine {
-  constructor(container) {
+  constructor(container, options = {}) {
     this.container = container;
+    this.resolveImageSource = options.resolveImageSource || null;
+    this.imageObjectUrls = new Set();
+    this.renderVersion = 0;
     this.md = new MarkdownIt({
       html: true,
       linkify: true,
@@ -710,13 +735,57 @@ class PreviewEngine {
   }
 
   render(markdownSource) {
+    const renderVersion = ++this.renderVersion;
+    this.revokeImageObjectUrls();
+
     if (!markdownSource.trim()) {
       this.container.innerHTML = '<div class="empty-state compact">预览区暂无内容</div>';
       return;
     }
 
     this.container.innerHTML = this.md.render(markdownSource);
+    this.resolveImageSources(renderVersion);
     this.renderMermaidDiagrams();
+  }
+
+  revokeImageObjectUrls() {
+    this.imageObjectUrls.forEach((url) => URL.revokeObjectURL(url));
+    this.imageObjectUrls.clear();
+  }
+
+  async resolveImageSources(renderVersion) {
+    if (!this.resolveImageSource) {
+      return;
+    }
+
+    const images = Array.from(this.container.querySelectorAll('img[src]'));
+    await Promise.all(images.map(async (image) => {
+      const originalSource = image.getAttribute('src');
+      if (!originalSource) {
+        return;
+      }
+
+      try {
+        const resolvedSource = await this.resolveImageSource(originalSource);
+        if (!resolvedSource) {
+          return;
+        }
+
+        if (this.renderVersion !== renderVersion || !image.isConnected) {
+          if (resolvedSource.startsWith('blob:')) {
+            URL.revokeObjectURL(resolvedSource);
+          }
+          return;
+        }
+
+        image.setAttribute('src', resolvedSource);
+        if (resolvedSource.startsWith('blob:')) {
+          this.imageObjectUrls.add(resolvedSource);
+        }
+      } catch (error) {
+        console.warn('Failed to resolve preview image', originalSource, error);
+      }
+    }));
   }
 
   async renderMermaidDiagrams() {
@@ -1150,7 +1219,9 @@ class MarkdownStudioApp {
     this.historyCollapsed = Boolean(prefs.historyCollapsed);
     this.layout = new LayoutController(this.root.querySelector('.studio-shell'));
     this.editor = new EditorCore(this.root.querySelector('#editorHost'));
-    this.preview = new PreviewEngine(this.root.querySelector('#previewHost'));
+    this.preview = new PreviewEngine(this.root.querySelector('#previewHost'), {
+      resolveImageSource: (source) => this.resolvePreviewImageSource(source)
+    });
     this.outline = new OutlineManager(this.root.querySelector('#outlineHost'), this.editor, this.preview);
     this.scrollSync = new EditorPreviewScrollSync(this.editor, this.preview);
     this.tree = new TreeView(this.root.querySelector('#treeHost'), {
@@ -1484,6 +1555,22 @@ class MarkdownStudioApp {
     }
 
     return imported;
+  }
+
+  async resolvePreviewImageSource(source) {
+    const workspacePath = this.currentFile?.path || (this.fs.rootHandle ? this.snapshotFile?.path : '');
+    if (workspacePath) {
+      const resourcePath = resolveWorkspaceResourcePath(source, workspacePath);
+      if (resourcePath) {
+        const file = await this.fs.readFileByPathParts(resourcePath);
+        if (file) {
+          return URL.createObjectURL(file);
+        }
+      }
+    }
+
+    const fileUrl = this.importedFile?.url || this.snapshotFile?.url || '';
+    return resolveFileResourceUrl(source, fileUrl);
   }
 
   loadImportedFile(file) {
