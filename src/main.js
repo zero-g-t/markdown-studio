@@ -2,6 +2,7 @@ import './styles.css';
 import MarkdownIt from 'markdown-it';
 import markdownItTaskLists from 'markdown-it-task-lists';
 import mermaid from 'mermaid';
+import { extractOutlineItems } from './outline.js';
 import { resolveFileResourceUrl, resolveWorkspaceResourcePath } from './resource-paths.js';
 import { basicSetup, EditorView } from 'codemirror';
 import { markdown } from '@codemirror/lang-markdown';
@@ -882,20 +883,7 @@ class OutlineManager {
   }
 
   extract(markdownSource) {
-    return markdownSource
-      .split(/\r?\n/)
-      .map((line, index) => {
-        const match = /^(#{1,6})\s+(.+?)\s*#*\s*$/.exec(line);
-        if (!match) {
-          return null;
-        }
-        return {
-          level: match[1].length,
-          text: match[2].trim(),
-          lineNumber: index + 1
-        };
-      })
-      .filter(Boolean);
+    return extractOutlineItems(markdownSource);
   }
 
   render() {
