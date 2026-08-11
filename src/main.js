@@ -2,7 +2,7 @@ import './styles.css';
 import MarkdownIt from 'markdown-it';
 import markdownItTaskLists from 'markdown-it-task-lists';
 import mermaid from 'mermaid';
-import { extractOutlineItems } from './outline.js';
+import { extractOutlineItems, inlineTokensToText, slugifyHeadingText } from './outline.js';
 import { resolveFileResourceUrl, resolveWorkspaceResourcePath } from './resource-paths.js';
 import { basicSetup, EditorView } from 'codemirror';
 import { markdown } from '@codemirror/lang-markdown';
@@ -687,6 +687,7 @@ class PreviewEngine {
     this.container = container;
     this.resolveImageSource = options.resolveImageSource || null;
     this.imageObjectUrls = new Set();
+    this.headingIds = new Set();
     this.renderVersion = 0;
     this.md = new MarkdownIt({
       html: true,
@@ -718,8 +719,11 @@ class PreviewEngine {
     const originalLinkOpen = this.md.renderer.rules.link_open || ((tokens, idx, options, env, self) => self.renderToken(tokens, idx, options));
     this.md.renderer.rules.link_open = (tokens, idx, options, env, self) => {
       const token = tokens[idx];
-      token.attrSet('target', '_blank');
-      token.attrSet('rel', 'noopener noreferrer');
+      const href = token.attrGet('href') || '';
+      if (!href.startsWith('#')) {
+        token.attrSet('target', '_blank');
+        token.attrSet('rel', 'noopener noreferrer');
+      }
       return originalLinkOpen(tokens, idx, options, env, self);
     };
 
@@ -731,8 +735,25 @@ class PreviewEngine {
         token.attrSet('data-source-line', String(lineNumber));
         token.attrJoin('class', 'preview-heading');
       }
+      const inlineToken = tokens[idx + 1];
+      if (inlineToken?.type === 'inline') {
+        const text = inlineTokensToText(inlineToken.children || [inlineToken]).trim();
+        if (text) {
+          token.attrSet('id', this.getUniqueHeadingId(text));
+        }
+      }
       return originalHeadingOpen(tokens, idx, options, env, self);
     };
+
+    this.container.addEventListener('click', (event) => {
+      const link = event.target?.closest?.('a[href^="#"]');
+      if (!link) {
+        return;
+      }
+      if (this.scrollToHashLink(link.getAttribute('href'))) {
+        event.preventDefault();
+      }
+    });
   }
 
   render(markdownSource) {
@@ -744,6 +765,7 @@ class PreviewEngine {
       return;
     }
 
+    this.headingIds.clear();
     this.container.innerHTML = this.md.render(markdownSource);
     this.resolveImageSources(renderVersion);
     this.renderMermaidDiagrams();
@@ -816,6 +838,46 @@ class PreviewEngine {
         }
       }
     }));
+  }
+
+  getUniqueHeadingId(text) {
+    const base = slugifyHeadingText(text) || 'section';
+    let id = base;
+    let counter = 1;
+    while (this.headingIds.has(id)) {
+      id = `${base}-${counter++}`;
+    }
+    this.headingIds.add(id);
+    return id;
+  }
+
+  scrollToHashLink(rawHash) {
+    if (!rawHash?.startsWith('#')) {
+      return false;
+    }
+
+    let id = rawHash.slice(1);
+    try {
+      id = decodeURIComponent(id);
+    } catch {
+      // Keep the raw value when the hash contains malformed percent escapes.
+    }
+
+    const target = Array.from(this.container.querySelectorAll('[id]'))
+      .find((element) => element.id === id);
+    if (!target) {
+      return false;
+    }
+
+    target.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    target.classList.add('preview-heading-flash');
+    window.setTimeout(() => target.classList.remove('preview-heading-flash'), 1200);
+    try {
+      window.history.replaceState(null, '', rawHash);
+    } catch {
+      // Some file/extension contexts disallow history updates; scrolling still works.
+    }
+    return true;
   }
 
   toPlainText(markdownSource) {

@@ -7,7 +7,7 @@ const outlineMarkdown = new MarkdownIt({
   breaks: true
 });
 
-function inlineTokensToText(tokens = []) {
+export function inlineTokensToText(tokens = []) {
   return tokens
     .map((token) => {
       if (token.type === 'html_inline' || token.type === 'html_block') {
@@ -19,6 +19,16 @@ function inlineTokensToText(tokens = []) {
       return token.content || '';
     })
     .join('');
+}
+
+export function slugifyHeadingText(text) {
+  return text
+    .toLowerCase()
+    .trim()
+    .replace(/[^\p{L}\p{N}\s-]/gu, '')
+    .replace(/\s+/g, '-')
+    .replace(/-{2,}/g, '-')
+    .replace(/^-+|-+$/g, '');
 }
 
 export function extractOutlineItems(markdownSource) {
