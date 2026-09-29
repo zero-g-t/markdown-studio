@@ -44,12 +44,24 @@ const MIN_REFRESH_INTERVAL_SECONDS = 1;
 const MAX_REFRESH_INTERVAL_SECONDS = 60;
 const EMPTY_DOCUMENT = '# Untitled\n\nStart writing Markdown here.\n';
 const THEME_COLORS = [
-  { id: 'teal', label: '青绿', accent: '#237a6b', strong: '#16594d', soft: '#dceee8' },
-  { id: 'blue', label: '靛蓝', accent: '#2563eb', strong: '#1d4ed8', soft: '#dbeafe' },
-  { id: 'violet', label: '紫罗兰', accent: '#7c3aed', strong: '#5b21b6', soft: '#ede9fe' },
-  { id: 'amber', label: '琥珀', accent: '#b45309', strong: '#92400e', soft: '#fef3c7' },
-  { id: 'rose', label: '玫红', accent: '#e11d48', strong: '#be123c', soft: '#ffe4e6' }
+  { id: 'teal', label: '青绿', hue: 170, accent: '#237a6b', strong: '#16594d', soft: '#dceee8' },
+  { id: 'blue', label: '靛蓝', hue: 221, accent: '#2563eb', strong: '#1d4ed8', soft: '#dbeafe' },
+  { id: 'violet', label: '紫罗兰', hue: 262, accent: '#7c3aed', strong: '#5b21b6', soft: '#ede9fe' },
+  { id: 'amber', label: '琥珀', hue: 28, accent: '#b45309', strong: '#92400e', soft: '#fef3c7' },
+  { id: 'rose', label: '玫红', hue: 347, accent: '#e11d48', strong: '#be123c', soft: '#ffe4e6' }
 ];
+
+// 侧栏、按钮等中性底色统一由主题色相推导，保证切换主题色后整套界面同色系。
+function themeSurfacePalette(hue) {
+  return {
+    subtle: `hsl(${hue}, 34%, 97.5%)`,
+    muted: `hsl(${hue}, 32%, 93.5%)`,
+    border: `hsl(${hue}, 18%, 85%)`,
+    borderStrong: `hsl(${hue}, 18%, 74%)`,
+    canvas: `hsl(${hue}, 28%, 96.5%)`,
+    textMuted: `hsl(${hue}, 12%, 42%)`
+  };
+}
 const studioIcons = {
   ChevronDown,
   ChevronRight,
@@ -2134,6 +2146,14 @@ class MarkdownStudioApp {
     rootStyle.setProperty('--accent', theme.accent);
     rootStyle.setProperty('--accent-strong', theme.strong);
     rootStyle.setProperty('--accent-soft', theme.soft);
+
+    const surfaces = themeSurfacePalette(theme.hue);
+    rootStyle.setProperty('--surface-subtle', surfaces.subtle);
+    rootStyle.setProperty('--surface-muted', surfaces.muted);
+    rootStyle.setProperty('--border', surfaces.border);
+    rootStyle.setProperty('--border-strong', surfaces.borderStrong);
+    rootStyle.setProperty('--app-background', surfaces.canvas);
+    rootStyle.setProperty('--text-muted', surfaces.textMuted);
 
     this.root.querySelectorAll('[data-theme-color]').forEach((button) => {
       const active = button.dataset.themeColor === theme.id;

@@ -3,16 +3,17 @@
     Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
     "Microsoft YaHei", sans-serif;
   color: #202225;
-  background: #f6f7f2;
+  background: var(--app-background);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
-  --border: #d8dcd1;
-  --border-strong: #bcc5b7;
+  --app-background: hsl(170, 28%, 96.5%);
+  --border: hsl(170, 18%, 85%);
+  --border-strong: hsl(170, 18%, 74%);
   --surface: #ffffff;
-  --surface-muted: #f0f3ed;
-  --surface-subtle: #fafbf7;
-  --text-muted: #667064;
+  --surface-muted: hsl(170, 32%, 93.5%);
+  --surface-subtle: hsl(170, 34%, 97.5%);
+  --text-muted: hsl(170, 12%, 42%);
   --accent: #237a6b;
   --accent-strong: #16594d;
   --accent-soft: #dceee8;
@@ -31,7 +32,7 @@ body {
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
-  background: #f6f7f2;
+  background: var(--app-background);
 }
 
 button,
@@ -369,7 +370,7 @@ svg {
 }
 
 .history-toggle:hover {
-  background: #e9ede5;
+  background: var(--surface-muted);
 }
 
 .history-host {
@@ -419,7 +420,7 @@ svg {
 
 .history-item:hover,
 .history-delete:hover {
-  background: #e9ede5;
+  background: var(--surface-muted);
 }
 
 .history-delete:hover {
@@ -457,7 +458,7 @@ svg {
 }
 
 .tree-row:hover {
-  background: #e9ede5;
+  background: var(--surface-muted);
 }
 
 .tree-row.active {
@@ -598,14 +599,14 @@ svg {
 }
 
 .cm-gutters {
-  background: #fbfcf8;
-  color: #889183;
+  background: var(--surface-subtle);
+  color: var(--text-muted);
   border-right-color: var(--border);
 }
 
 .cm-activeLine,
 .cm-activeLineGutter {
-  background: #eef4ea;
+  background: var(--surface-muted);
 }
 
 .cm-flash-line {
@@ -633,9 +634,9 @@ svg {
   z-index: 2;
   max-width: calc(100% - 28px);
   padding: 5px 9px;
-  border: 1px solid rgba(188, 197, 183, 0.85);
+  border: 1px solid var(--border);
   border-radius: 6px;
-  background: rgba(250, 251, 247, 0.94);
+  background: var(--surface-subtle);
   color: var(--text-muted);
   font-size: 12px;
   line-height: 1.2;
@@ -684,7 +685,7 @@ svg {
 .markdown-body code {
   padding: 0.18em 0.35em;
   border-radius: 4px;
-  background: #eef0eb;
+  background: var(--surface-muted);
   font-family:
     "Cascadia Code", "JetBrains Mono", Consolas, "SFMono-Regular", monospace;
   font-size: 0.88em;
@@ -741,8 +742,8 @@ svg {
 
 .markdown-body blockquote {
   padding-left: 14px;
-  border-left: 4px solid #c8d2c1;
-  color: #576055;
+  border-left: 4px solid var(--border-strong);
+  color: var(--text-muted);
 }
 
 .markdown-body table {
@@ -798,7 +799,7 @@ svg {
 }
 
 .outline-item:hover {
-  background: #e9ede5;
+  background: var(--surface-muted);
 }
 
 .outline-item.active {
