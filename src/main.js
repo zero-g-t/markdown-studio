@@ -432,27 +432,6 @@ class FileSystemModule {
     return current;
   }
 
-  async findFileByName(node, name) {
-    if (!node) {
-      return null;
-    }
-    if (node.type === 'file' && node.name === name) {
-      return node;
-    }
-    if (node.type !== 'directory') {
-      return null;
-    }
-
-    await this.loadChildren(node);
-    for (const child of node.children) {
-      const found = await this.findFileByName(child, name);
-      if (found) {
-        return found;
-      }
-    }
-    return null;
-  }
-
   async refreshTree() {
     if (!this.rootHandle) {
       return null;
@@ -1823,22 +1802,12 @@ class MarkdownStudioApp {
     }
   }
 
-  async openDirectory(options = {}) {
-    const unboundSource = !this.currentFile && (this.importedFile || this.snapshotFile);
-    const preferredFileName = options.preferredFileName || (unboundSource ? (this.importedFile?.name || this.snapshotFile?.name) : '');
-    const preferredContent = options.preferredContent ?? (unboundSource ? this.editor.getContent() : undefined);
-
+  async openDirectory() {
     try {
-      if (!unboundSource) {
-        await this.ensureSafeFileSwitch();
-      }
+      await this.ensureSafeFileSwitch();
       this.setSaveStatus('saving', '正在读取目录');
       const tree = await this.fs.pickDirectory();
-      await this.applyPickedDirectory(tree, {
-        ...options,
-        preferredFileName,
-        preferredContent
-      });
+      await this.applyPickedDirectory(tree);
       await this.loadDirectoryHistory();
     } catch (error) {
       if (error.name === 'AbortError') {
@@ -1855,24 +1824,9 @@ class MarkdownStudioApp {
     }
   }
 
-  async applyPickedDirectory(tree, options = {}) {
-    const preferredFileName = options.preferredFileName;
+  async applyPickedDirectory(tree) {
     this.currentTree = tree;
     this.tree.setRoot(this.currentTree);
-
-    if (preferredFileName) {
-      const matchingFile = this.findRootFileByName(this.currentTree, preferredFileName) || await this.fs.findFileByName(this.currentTree, preferredFileName);
-      if (matchingFile) {
-        if (options.preferredContent !== undefined) {
-          await this.bindRestoredFile(matchingFile, options.preferredContent);
-        } else {
-          await this.openFile(matchingFile);
-        }
-        return;
-      }
-      this.setSaveStatus('error', '未在所选文件夹中找到同名文件');
-      return;
-    }
 
     this.importedFile = null;
     this.currentFile = null;
@@ -2319,10 +2273,6 @@ class MarkdownStudioApp {
   getSiblingPath(path, nextName) {
     const parentPath = path.slice(0, path.lastIndexOf('/'));
     return `${parentPath || ''}/${nextName}`;
-  }
-
-  findRootFileByName(root, name) {
-    return root?.children?.find((child) => child.type === 'file' && child.name === name) || null;
   }
 }
 
