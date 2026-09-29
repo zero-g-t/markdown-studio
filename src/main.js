@@ -29,7 +29,9 @@ import {
   Plus,
   RefreshCw,
   Save,
+  Settings,
   Trash2,
+  X,
   createIcons
 } from 'lucide';
 
@@ -37,8 +39,17 @@ const MARKDOWN_EXTENSIONS = new Set(['.md', '.markdown', '.mdown', '.mkd']);
 const TXT_EXTENSION = new Set(['.txt']);
 const AUTOSAVE_DELAY = 650;
 const PREVIEW_DELAY = 180;
-const EXTERNAL_CHANGE_CHECK_INTERVAL = 2500;
+const DEFAULT_REFRESH_INTERVAL_SECONDS = 3;
+const MIN_REFRESH_INTERVAL_SECONDS = 1;
+const MAX_REFRESH_INTERVAL_SECONDS = 60;
 const EMPTY_DOCUMENT = '# Untitled\n\nStart writing Markdown here.\n';
+const THEME_COLORS = [
+  { id: 'teal', label: '青绿', accent: '#237a6b', strong: '#16594d', soft: '#dceee8' },
+  { id: 'blue', label: '靛蓝', accent: '#2563eb', strong: '#1d4ed8', soft: '#dbeafe' },
+  { id: 'violet', label: '紫罗兰', accent: '#7c3aed', strong: '#5b21b6', soft: '#ede9fe' },
+  { id: 'amber', label: '琥珀', accent: '#b45309', strong: '#92400e', soft: '#fef3c7' },
+  { id: 'rose', label: '玫红', accent: '#e11d48', strong: '#be123c', soft: '#ffe4e6' }
+];
 const studioIcons = {
   ChevronDown,
   ChevronRight,
@@ -59,8 +70,19 @@ const studioIcons = {
   Plus,
   RefreshCw,
   Save,
-  Trash2
+  Settings,
+  Trash2,
+  X
 };
+
+function renderThemeColorOptionsHtml() {
+  return THEME_COLORS.map(
+    (theme) => `<button class="theme-color-option" type="button" data-theme-color="${theme.id}" title="主题色：${theme.label}" aria-pressed="false">
+            <span class="theme-color-swatch" style="background:${theme.accent}"></span>
+            <span class="theme-color-label">${theme.label}</span>
+          </button>`
+  ).join('');
+}
 
 function debounce(fn, wait) {
   let timer = 0;
@@ -178,7 +200,8 @@ class PreferenceStore {
       fontSize: 16,
       autosave: true,
       previewAutoRefresh: true,
-      theme: 'light',
+      previewRefreshInterval: DEFAULT_REFRESH_INTERVAL_SECONDS,
+      themeColor: THEME_COLORS[0].id,
       historyCollapsed: false
     };
   }
@@ -1220,6 +1243,9 @@ class MarkdownStudioApp {
     this.dirty = false;
     this.autosave = true;
     this.previewAutoRefresh = true;
+    this.previewRefreshInterval = DEFAULT_REFRESH_INTERVAL_SECONDS * 1000;
+    this.externalCheckTimer = 0;
+    this.themeColor = THEME_COLORS[0].id;
     this.saveQueue = Promise.resolve();
     this.currentFileIsTxt = false;
     this.directoryHistory = [];
@@ -1265,8 +1291,11 @@ class MarkdownStudioApp {
     this.layout.setSidebar('left', prefs.leftSidebar !== false);
     this.layout.setSidebar('outline', prefs.outlineSidebar !== false);
     this.setFontSize(prefs.fontSize || 16, false);
-    this.setAutosave(this.autosave, false);
-    this.setPreviewAutoRefresh(this.previewAutoRefresh, false);
+    this.setThemeColor(prefs.themeColor, false);
+    this.setAutosave(this.autosave);
+    this.setPreviewAutoRefresh(this.previewAutoRefresh);
+    await this.setPreviewRefreshInterval(prefs.previewRefreshInterval, false);
+    this.scheduleExternalChecks();
     const importedFile = await this.consumeImportedFile();
     if (importedFile) {
       this.loadImportedFile(importedFile);
@@ -1331,14 +1360,13 @@ class MarkdownStudioApp {
             </button>
           </div>
           <div class="toolbar-group push">
-            <label class="toggle" title="内容变更后自动写回当前文件">
-              <input id="autosaveToggle" type="checkbox" />
-              <span>自动保存</span>
-            </label>
             <button id="saveButton" class="icon-button" type="button" title="保存当前文件">
               <i data-lucide="save"></i>
             </button>
             <div id="saveStatus" class="save-status idle" aria-live="polite">未打开文件</div>
+            <button id="settingsButton" class="icon-button" type="button" title="设置" aria-haspopup="dialog" aria-expanded="false">
+              <i data-lucide="settings"></i>
+            </button>
           </div>
         </header>
 
@@ -1373,10 +1401,6 @@ class MarkdownStudioApp {
                   <i data-lucide="refresh-cw"></i>
                   <span>刷新预览</span>
                 </button>
-                <label class="toggle preview-refresh-toggle" title="编辑内容变更或文件被外部修改后自动刷新预览">
-                  <input id="previewAutoRefreshToggle" type="checkbox" />
-                  <span>自动刷新</span>
-                </label>
                 <button id="copyPlainTextButton" class="tool-button document-action" type="button" title="复制不带 Markdown 标记的纯文本">
                   <i data-lucide="copy"></i>
                   <span>复制纯文本</span>
@@ -1410,6 +1434,43 @@ class MarkdownStudioApp {
         </footer>
       </main>
       <div id="contextMenu" class="context-menu" hidden></div>
+      <div id="settingsPanel" class="settings-panel" role="dialog" aria-label="设置" hidden>
+        <div class="settings-header">
+          <h2>设置</h2>
+          <button id="closeSettingsButton" class="icon-button small" type="button" title="关闭设置">
+            <i data-lucide="x"></i>
+          </button>
+        </div>
+        <div class="settings-body">
+          <section class="settings-section">
+            <h3>主题色</h3>
+            <div class="theme-color-options">
+              ${renderThemeColorOptionsHtml()}
+            </div>
+          </section>
+          <section class="settings-section">
+            <h3>编辑器</h3>
+            <label class="settings-row" title="内容变更后自动写回当前文件">
+              <span class="settings-label">自动保存</span>
+              <input id="autosaveToggle" type="checkbox" />
+            </label>
+          </section>
+          <section class="settings-section">
+            <h3>预览</h3>
+            <label class="settings-row" title="编辑内容变更或文件被外部修改后自动刷新预览">
+              <span class="settings-label">自动刷新</span>
+              <input id="previewAutoRefreshToggle" type="checkbox" />
+            </label>
+            <label class="settings-row" title="检测磁盘文件变化的间隔时间">
+              <span class="settings-label">刷新间隔</span>
+              <span class="settings-field">
+                <input id="previewRefreshIntervalInput" type="number" min="1" max="60" step="1" />
+                <span class="settings-unit">秒</span>
+              </span>
+            </label>
+          </section>
+        </div>
+      </div>
     `;
   }
 
@@ -1449,6 +1510,15 @@ class MarkdownStudioApp {
       });
     });
 
+    this.root.querySelector('#settingsButton').addEventListener('click', (event) => {
+      event.stopPropagation();
+      this.toggleSettings();
+    });
+    this.root.querySelector('#closeSettingsButton').addEventListener('click', () => this.toggleSettings(false));
+    this.root.querySelectorAll('[data-theme-color]').forEach((button) => {
+      button.addEventListener('click', () => this.setThemeColor(button.dataset.themeColor));
+    });
+
     this.root.querySelector('#autosaveToggle').addEventListener('change', async (event) => {
       this.setAutosave(event.target.checked);
       await this.preferences.save({ autosave: event.target.checked });
@@ -1460,6 +1530,10 @@ class MarkdownStudioApp {
       if (event.target.checked) {
         this.renderCurrentPreview();
       }
+    });
+
+    this.root.querySelector('#previewRefreshIntervalInput').addEventListener('change', (event) => {
+      this.setPreviewRefreshInterval(event.target.value);
     });
 
     this.editor.onChange((content) => {
@@ -1483,7 +1557,13 @@ class MarkdownStudioApp {
 
     this.editor.onCursor(() => this.updateStats());
 
-    document.addEventListener('click', () => this.closeContextMenu());
+    document.addEventListener('click', (event) => {
+      this.closeContextMenu();
+      const target = event.target instanceof Element ? event.target : null;
+      if (!target?.closest('#settingsPanel') && !target?.closest('#settingsButton')) {
+        this.toggleSettings(false);
+      }
+    });
     document.addEventListener('keydown', (event) => {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
         event.preventDefault();
@@ -1491,6 +1571,7 @@ class MarkdownStudioApp {
       }
       if (event.key === 'Escape') {
         this.closeContextMenu();
+        this.toggleSettings(false);
       }
     });
 
@@ -1507,11 +1588,6 @@ class MarkdownStudioApp {
         this.checkExternalChanges();
       }
     });
-    window.setInterval(
-      () => this.checkExternalChanges({ requireFileHandle: true }),
-      EXTERNAL_CHANGE_CHECK_INTERVAL
-    );
-
     this.setupResizeHandle('leftResizeHandle', 'leftSidebar', 180, 500, 'left');
     this.setupResizeHandle('outlineResizeHandle', 'outlinePane', 160, 500, 'right');
   }
@@ -2051,24 +2127,83 @@ class MarkdownStudioApp {
     }
   }
 
-  setAutosave(enabled, updateElement = true) {
+  async setThemeColor(id, persist = true) {
+    const theme = THEME_COLORS.find((item) => item.id === id) || THEME_COLORS[0];
+    this.themeColor = theme.id;
+    const rootStyle = document.documentElement.style;
+    rootStyle.setProperty('--accent', theme.accent);
+    rootStyle.setProperty('--accent-strong', theme.strong);
+    rootStyle.setProperty('--accent-soft', theme.soft);
+
+    this.root.querySelectorAll('[data-theme-color]').forEach((button) => {
+      const active = button.dataset.themeColor === theme.id;
+      button.classList.toggle('active', active);
+      button.setAttribute('aria-pressed', String(active));
+    });
+
+    if (persist) {
+      await this.preferences.save({ themeColor: theme.id });
+    }
+  }
+
+  setAutosave(enabled) {
     this.autosave = enabled;
     const toggle = this.root.querySelector('#autosaveToggle');
-    if (updateElement) {
-      toggle.checked = enabled;
-    } else {
+    if (toggle) {
       toggle.checked = this.autosave;
     }
   }
 
-  setPreviewAutoRefresh(enabled, updateElement = true) {
+  setPreviewAutoRefresh(enabled) {
     this.previewAutoRefresh = enabled;
     const toggle = this.root.querySelector('#previewAutoRefreshToggle');
-    if (toggle && updateElement) {
-      toggle.checked = enabled;
-    } else if (toggle) {
+    if (toggle) {
       toggle.checked = this.previewAutoRefresh;
     }
+    const intervalInput = this.root.querySelector('#previewRefreshIntervalInput');
+    if (intervalInput) {
+      intervalInput.disabled = !enabled;
+    }
+  }
+
+  async setPreviewRefreshInterval(value, persist = true) {
+    const parsed = Number(value);
+    const seconds = Number.isFinite(parsed) && parsed > 0
+      ? Math.min(MAX_REFRESH_INTERVAL_SECONDS, Math.max(MIN_REFRESH_INTERVAL_SECONDS, Math.round(parsed)))
+      : DEFAULT_REFRESH_INTERVAL_SECONDS;
+    this.previewRefreshInterval = seconds * 1000;
+
+    const input = this.root.querySelector('#previewRefreshIntervalInput');
+    if (input) {
+      input.value = String(seconds);
+      input.disabled = !this.previewAutoRefresh;
+    }
+
+    this.scheduleExternalChecks();
+
+    if (persist) {
+      await this.preferences.save({ previewRefreshInterval: seconds });
+    }
+  }
+
+  scheduleExternalChecks() {
+    if (this.externalCheckTimer) {
+      window.clearInterval(this.externalCheckTimer);
+    }
+    this.externalCheckTimer = window.setInterval(
+      () => this.checkExternalChanges({ requireFileHandle: true }),
+      this.previewRefreshInterval
+    );
+  }
+
+  toggleSettings(force) {
+    const panel = this.root.querySelector('#settingsPanel');
+    const button = this.root.querySelector('#settingsButton');
+    if (!panel || !button) return;
+    const open = typeof force === 'boolean' ? force : panel.hidden;
+    panel.hidden = !open;
+    button.classList.toggle('active', open);
+    button.setAttribute('aria-expanded', String(open));
   }
 
   renderCurrentPreview() {
@@ -2169,7 +2304,8 @@ class MarkdownStudioApp {
     }
 
     const now = Date.now();
-    if (now - this.lastExternalCheckAt < 1000) {
+    const minGap = Math.max(300, Math.min(1000, this.previewRefreshInterval / 2));
+    if (now - this.lastExternalCheckAt < minGap) {
       return;
     }
     this.lastExternalCheckAt = now;
