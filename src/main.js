@@ -37,6 +37,7 @@ const MARKDOWN_EXTENSIONS = new Set(['.md', '.markdown', '.mdown', '.mkd']);
 const TXT_EXTENSION = new Set(['.txt']);
 const AUTOSAVE_DELAY = 650;
 const PREVIEW_DELAY = 180;
+const EXTERNAL_CHANGE_CHECK_INTERVAL = 2500;
 const EMPTY_DOCUMENT = '# Untitled\n\nStart writing Markdown here.\n';
 const studioIcons = {
   ChevronDown,
@@ -569,41 +570,37 @@ class EditorCore {
     this.cursorCallbacks = new Set();
     this.settingContent = false;
     this.highlightTimer = 0;
+    this.extensions = [
+      basicSetup,
+      markdown(),
+      lineHighlightField,
+      keymap.of([indentWithTab]),
+      EditorView.lineWrapping,
+      EditorView.updateListener.of((update) => {
+        if (update.docChanged && !this.settingContent) {
+          const content = this.getContent();
+          this.callbacks.forEach((callback) => callback(content));
+        }
+        if (update.docChanged || update.selectionSet) {
+          this.emitCursor();
+        }
+      })
+    ];
 
     this.view = new EditorView({
       parent,
-      state: EditorState.create({
-        doc: '',
-        extensions: [
-          basicSetup,
-          markdown(),
-          lineHighlightField,
-          keymap.of([indentWithTab]),
-          EditorView.lineWrapping,
-          EditorView.updateListener.of((update) => {
-            if (update.docChanged && !this.settingContent) {
-              const content = this.getContent();
-              this.callbacks.forEach((callback) => callback(content));
-            }
-            if (update.docChanged || update.selectionSet) {
-              this.emitCursor();
-            }
-          })
-        ]
-      })
+      state: EditorState.create({ doc: '', extensions: this.extensions })
     });
   }
 
+  // 整体替换文档（打开文件、从磁盘重新加载）时重建编辑器状态，撤销历史不会跨越两个文档
   setContent(text) {
+    const { scrollTop, scrollLeft } = this.view.scrollDOM;
     this.settingContent = true;
-    this.view.dispatch({
-      changes: {
-        from: 0,
-        to: this.view.state.doc.length,
-        insert: text
-      }
-    });
+    this.view.setState(EditorState.create({ doc: text, extensions: this.extensions }));
     this.settingContent = false;
+    this.view.scrollDOM.scrollTop = scrollTop;
+    this.view.scrollDOM.scrollLeft = scrollLeft;
     this.emitCursor();
   }
 
@@ -1228,6 +1225,7 @@ class MarkdownStudioApp {
     this.directoryHistory = [];
     this.historyCollapsed = false;
     this.plaintextPreview = null;
+    this.lastExternalCheckAt = 0;
     this.refreshPreview = debounce(() => {
       if (this.previewAutoRefresh) {
         this.renderCurrentPreview();
@@ -1371,11 +1369,11 @@ class MarkdownStudioApp {
                 <p id="filePath">选择文件夹后打开 Markdown 文件</p>
               </div>
               <div class="document-actions">
-                <button id="manualPreviewRefreshButton" class="tool-button document-action" type="button" title="立即刷新预览">
+                <button id="manualPreviewRefreshButton" class="tool-button document-action" type="button" title="重新读取磁盘文件并刷新预览">
                   <i data-lucide="refresh-cw"></i>
                   <span>刷新预览</span>
                 </button>
-                <label class="toggle preview-refresh-toggle" title="编辑内容变更后自动刷新预览">
+                <label class="toggle preview-refresh-toggle" title="编辑内容变更或文件被外部修改后自动刷新预览">
                   <input id="previewAutoRefreshToggle" type="checkbox" />
                   <span>自动刷新</span>
                 </label>
@@ -1420,7 +1418,7 @@ class MarkdownStudioApp {
     this.root.querySelector('#refreshButton').addEventListener('click', () => this.refreshDirectory());
     this.root.querySelector('#saveButton').addEventListener('click', () => this.saveCurrentFile('manual'));
     this.root.querySelector('#newRootFileButton').addEventListener('click', () => this.createInRoot('file'));
-    this.root.querySelector('#manualPreviewRefreshButton').addEventListener('click', () => this.renderCurrentPreview({ notify: true }));
+    this.root.querySelector('#manualPreviewRefreshButton').addEventListener('click', () => this.refreshDocumentView({ interactive: true }));
     this.root.querySelector('#copyPlainTextButton').addEventListener('click', () => this.copyPlainText());
     this.root.querySelector('#historyToggleButton').addEventListener('click', () => this.toggleDirectoryHistory());
     this.root.querySelector('#decreaseFontButton').addEventListener('click', () => this.adjustFontSize(-1));
@@ -1502,6 +1500,17 @@ class MarkdownStudioApp {
         event.returnValue = '';
       }
     });
+
+    window.addEventListener('focus', () => this.checkExternalChanges());
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') {
+        this.checkExternalChanges();
+      }
+    });
+    window.setInterval(
+      () => this.checkExternalChanges({ requireFileHandle: true }),
+      EXTERNAL_CHANGE_CHECK_INTERVAL
+    );
 
     this.setupResizeHandle('leftResizeHandle', 'leftSidebar', 180, 500, 'left');
     this.setupResizeHandle('outlineResizeHandle', 'outlinePane', 160, 500, 'right');
@@ -1896,15 +1905,7 @@ class MarkdownStudioApp {
       this.lastSavedContent = content;
       this.dirty = false;
 
-      if (this.currentFileIsTxt) {
-        this.editor.setContent('');
-        this.plaintextPreview.render(content);
-        this.outline.update('');
-      } else {
-        this.editor.setContent(content);
-        this.preview.render(content);
-        this.outline.update(content);
-      }
+      this.renderDocumentContent(content);
 
       if (shouldResetScroll) {
         this.resetDocumentScroll();
@@ -1912,7 +1913,6 @@ class MarkdownStudioApp {
 
       this.tree.setActivePath(node.path);
       this.updateFileTitle();
-      this.updateStats();
       this.setSaveStatus('saved', '已保存');
       await this.preferences.save({ activePath: node.path });
       this.persistDocumentSnapshot().catch((error) => console.warn('Failed to persist document snapshot', error));
@@ -2071,13 +2071,111 @@ class MarkdownStudioApp {
     }
   }
 
-  renderCurrentPreview(options = {}) {
+  renderCurrentPreview() {
     const content = this.editor.getContent();
     this.preview.render(content);
     this.outline.update(content);
-    if (options.notify) {
-      this.setSaveStatus(this.dirty ? 'dirty' : 'saved', this.dirty ? '预览已刷新' : '预览已刷新');
+  }
+
+  renderDocumentContent(content) {
+    if (this.currentFileIsTxt) {
+      this.editor.setContent('');
+      this.plaintextPreview.render(content);
+      this.outline.update('');
+    } else {
+      this.editor.setContent(content);
+      this.preview.render(content);
+      this.outline.update(content);
     }
+    this.updateStats();
+  }
+
+  async readSourceContentFromDisk() {
+    if (this.currentFile) {
+      await this.saveQueue;
+      return this.fs.readFile(this.currentFile.handle);
+    }
+
+    const url = this.importedFile?.url || this.snapshotFile?.url || '';
+    if (!url) {
+      return null;
+    }
+
+    let response;
+    try {
+      response = await fetch(url, { cache: 'no-store' });
+    } catch (error) {
+      throw new Error(`无法从磁盘重新读取该文件：${error.message}`);
+    }
+    if (!response.ok) {
+      throw new Error(`无法从磁盘重新读取该文件：HTTP ${response.status}`);
+    }
+    return response.text();
+  }
+
+  async syncDocumentWithDisk({ interactive = false } = {}) {
+    const diskContent = await this.readSourceContentFromDisk();
+    if (diskContent === null) {
+      return 'no-source';
+    }
+    if (diskContent === this.lastSavedContent) {
+      return 'unchanged';
+    }
+
+    if (this.dirty) {
+      if (!interactive) {
+        this.setSaveStatus('dirty', '磁盘文件已被外部修改，可点击“刷新预览”重新加载');
+        return 'conflict';
+      }
+      const shouldReload = window.confirm('磁盘上的文件已被外部修改，重新加载会丢弃当前未保存的修改。是否继续？');
+      if (!shouldReload) {
+        this.setSaveStatus('dirty', '已保留本地修改');
+        return 'conflict';
+      }
+    }
+
+    this.lastSavedContent = diskContent;
+    this.dirty = false;
+    this.renderDocumentContent(diskContent);
+    this.setSaveStatus('saved', '已从磁盘重新加载');
+    this.persistDocumentSnapshot().catch((error) => console.warn('Failed to persist document snapshot', error));
+    return 'reloaded';
+  }
+
+  async refreshDocumentView({ interactive = false } = {}) {
+    try {
+      const result = await this.syncDocumentWithDisk({ interactive });
+      if (result === 'reloaded' || result === 'conflict') {
+        return;
+      }
+
+      if (this.currentFileIsTxt) {
+        this.plaintextPreview.render(this.lastSavedContent);
+      } else {
+        this.renderCurrentPreview();
+      }
+      this.setSaveStatus(this.dirty ? 'dirty' : 'saved', '预览已刷新');
+    } catch (error) {
+      this.showError(error);
+    }
+  }
+
+  checkExternalChanges({ requireFileHandle = false } = {}) {
+    if (!this.previewAutoRefresh || document.hidden) {
+      return;
+    }
+    if (requireFileHandle && !this.currentFile) {
+      return;
+    }
+
+    const now = Date.now();
+    if (now - this.lastExternalCheckAt < 1000) {
+      return;
+    }
+    this.lastExternalCheckAt = now;
+    this.syncDocumentWithDisk({ interactive: false }).catch((error) => {
+      console.warn('Failed to check external file changes', error);
+    });
   }
 
   updateFileTitle() {
