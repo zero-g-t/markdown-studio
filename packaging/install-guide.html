@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Markdown Studio {{VERSION}} 安装说明</title>
+<style>
+  :root {
+    --bg: #f5f8f8;
+    --card: #ffffff;
+    --fg: #17292a;
+    --muted: #5c7475;
+    --accent: #0f9b8e;
+    --accent-weak: #e6f6f4;
+    --border: #e0eaea;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0e1617;
+      --card: #162123;
+      --fg: #e6efef;
+      --muted: #93a9aa;
+      --accent: #2ec4b4;
+      --accent-weak: #143230;
+      --border: #263a3c;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 40px 20px 64px;
+    background: var(--bg);
+    color: var(--fg);
+    font: 15px/1.75 "Microsoft YaHei", "PingFang SC", "Segoe UI", system-ui, sans-serif;
+  }
+  .wrap { max-width: 820px; margin: 0 auto; }
+  h1 { font-size: 26px; margin: 0 0 6px; letter-spacing: .3px; }
+  .sub { color: var(--muted); margin: 0 0 28px; font-size: 14px; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 22px 26px;
+    margin-bottom: 18px;
+  }
+  h2 {
+    font-size: 17px;
+    margin: 0 0 14px;
+    padding-left: 11px;
+    border-left: 4px solid var(--accent);
+    line-height: 1.2;
+  }
+  ol, ul { margin: 0; padding-left: 22px; }
+  li { margin: 8px 0; }
+  li > b { color: var(--accent); }
+  code {
+    font-family: Consolas, "Courier New", monospace;
+    background: var(--accent-weak);
+    color: var(--accent);
+    border-radius: 4px;
+    padding: 1px 6px;
+    font-size: 13.5px;
+    word-break: break-all;
+  }
+  .path {
+    display: inline-block;
+    background: var(--accent-weak);
+    border-radius: 4px;
+    padding: 1px 6px;
+    font-family: Consolas, monospace;
+    font-size: 13.5px;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Markdown Studio {{VERSION}}</h1>
+  <p class="sub">Chrome / Edge 扩展 · 离线运行 · 本地文件读写</p>
+
+  <div class="card">
+    <h2>安装说明</h2>
+    <ol>
+      <li>打开扩展管理页：在地址栏输入 <code>chrome://extensions</code>（Edge 用 <code>edge://extensions</code>）并回车。</li>
+      <li>打开页面右上角的 <b>开发者模式</b> 开关。</li>
+      <li>点击左上角的 <b>加载已解压的扩展程序</b>。</li>
+      <li>在弹出的选择框里，选中 <span class="path">markdown-studio-{{VERSION}}</span> 文件夹，点「选择文件夹」。</li>
+      <li>列表里出现「Markdown Studio」即安装成功。点工具栏的拼图图标，把它「固定」到工具栏。</li>
+      <li>以后点击工具栏图标即可打开编辑器；也可以直接用它打开电脑上的 <code>.md</code> 文件。</li>
+    </ol>
+  </div>
+
+  <div class="card">
+    <h2>使用注意</h2>
+    <ul>
+      <li>只支持 Chrome / Edge / Brave 等 Chromium 内核浏览器，Firefox 不支持（缺少本地文件夹读写接口）。</li>
+      <li>首次点「打开文件夹」时，浏览器会弹出授权提示，必须点<b>允许</b>，否则无法读取本地文件。</li>
+      <li>不要删除、移动或重命名这个扩展文件夹：扩展直接从该文件夹加载，删掉或改名后立即失效。</li>
+      <li>完全离线运行，不联网、不上传任何文件，全部数据只存在你自己电脑上。</li>
+      <li><b>更新版本</b>：把新版本的文件夹覆盖到原来安装的目录，回到扩展管理页点一次「重新加载」。</li>
+      <li><b>卸载</b>：扩展管理页点「移除」，然后删掉那个文件夹即可。</li>
+    </ul>
+  </div>
+
+</div>
+</body>
+</html>
