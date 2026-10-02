@@ -4,6 +4,7 @@ import markdownItTaskLists from 'markdown-it-task-lists';
 import mermaid from 'mermaid';
 import { extractOutlineItems, inlineTokensToText, slugifyHeadingText } from './outline.js';
 import { resolveFileResourceUrl, resolveWorkspaceResourcePath } from './resource-paths.js';
+import { THEME_COLORS, themeSurfacePalette } from './shared/theme-colors.js';
 import { basicSetup, EditorView } from 'codemirror';
 import { markdown } from '@codemirror/lang-markdown';
 import { EditorState, StateEffect, StateField } from '@codemirror/state';
@@ -43,25 +44,6 @@ const DEFAULT_REFRESH_INTERVAL_SECONDS = 3;
 const MIN_REFRESH_INTERVAL_SECONDS = 1;
 const MAX_REFRESH_INTERVAL_SECONDS = 60;
 const EMPTY_DOCUMENT = '# Untitled\n\nStart writing Markdown here.\n';
-const THEME_COLORS = [
-  { id: 'teal', label: '青绿', hue: 170, accent: '#237a6b', strong: '#16594d', soft: '#dceee8' },
-  { id: 'blue', label: '靛蓝', hue: 221, accent: '#2563eb', strong: '#1d4ed8', soft: '#dbeafe' },
-  { id: 'violet', label: '紫罗兰', hue: 262, accent: '#7c3aed', strong: '#5b21b6', soft: '#ede9fe' },
-  { id: 'amber', label: '琥珀', hue: 28, accent: '#b45309', strong: '#92400e', soft: '#fef3c7' },
-  { id: 'rose', label: '玫红', hue: 347, accent: '#e11d48', strong: '#be123c', soft: '#ffe4e6' }
-];
-
-// 侧栏、按钮等中性底色统一由主题色相推导，保证切换主题色后整套界面同色系。
-function themeSurfacePalette(hue) {
-  return {
-    subtle: `hsl(${hue}, 34%, 97.5%)`,
-    muted: `hsl(${hue}, 32%, 93.5%)`,
-    border: `hsl(${hue}, 18%, 85%)`,
-    borderStrong: `hsl(${hue}, 18%, 74%)`,
-    canvas: `hsl(${hue}, 28%, 96.5%)`,
-    textMuted: `hsl(${hue}, 12%, 42%)`
-  };
-}
 const studioIcons = {
   ChevronDown,
   ChevronRight,
@@ -693,11 +675,37 @@ class EditorCore {
   }
 }
 
+// ````markdown` / ````md` 围栏里的内容是「嵌套的 Markdown」，按 Markdown 渲染而不是当代码块。
+// 只对这两种 info 生效，普通代码块行为不变；深度上限防止嵌套围栏无限递归。
+const NESTED_MARKDOWN_LANGUAGES = new Set(['markdown', 'md']);
+const MAX_NESTED_MARKDOWN_DEPTH = 3;
+
+// 本地（或远程）媒体文件链接在预览里回显为内联播放器，而不是一行文件名。
+const VIDEO_EXTENSIONS = new Set(['mp4', 'm4v', 'webm', 'ogv', 'mov']);
+const AUDIO_EXTENSIONS = new Set(['mp3', 'wav', 'm4a', 'aac', 'flac', 'oga', 'ogg']);
+
+function resourceMediaKind(resourcePath) {
+  const cleanPath = String(resourcePath || '').split(/[?#]/)[0].trim();
+  const match = /\.([a-z0-9]+)$/i.exec(cleanPath);
+  if (!match) {
+    return null;
+  }
+
+  const extension = match[1].toLowerCase();
+  if (VIDEO_EXTENSIONS.has(extension)) {
+    return 'video';
+  }
+  if (AUDIO_EXTENSIONS.has(extension)) {
+    return 'audio';
+  }
+  return null;
+}
+
 class PreviewEngine {
   constructor(container, options = {}) {
     this.container = container;
-    this.resolveImageSource = options.resolveImageSource || null;
-    this.imageObjectUrls = new Set();
+    this.resolveResourceSource = options.resolveResourceSource || null;
+    this.objectUrls = new Set();
     this.headingIds = new Set();
     this.renderVersion = 0;
     this.md = new MarkdownIt({
@@ -724,6 +732,13 @@ class PreviewEngine {
       if (language === 'mermaid') {
         return `<div class="mermaid-diagram"><pre class="mermaid-source">${escapeHtml(token.content)}</pre></div>`;
       }
+      if (NESTED_MARKDOWN_LANGUAGES.has(language)) {
+        const depth = Number(env?.nestedMarkdownDepth) || 0;
+        if (depth < MAX_NESTED_MARKDOWN_DEPTH) {
+          const nested = this.md.render(token.content, { ...env, nestedMarkdownDepth: depth + 1 });
+          return `<div class="nested-markdown">${nested}</div>`;
+        }
+      }
       return originalFence(tokens, idx, options, env, self);
     };
 
@@ -741,6 +756,10 @@ class PreviewEngine {
     const originalHeadingOpen = this.md.renderer.rules.heading_open || ((tokens, idx, options, env, self) => self.renderToken(tokens, idx, options));
     this.md.renderer.rules.heading_open = (tokens, idx, options, env, self) => {
       const token = tokens[idx];
+      // 嵌套 Markdown 里的标题不在源文档中，行号/锚点会与真实大纲冲突，故不注入定位属性。
+      if (Number(env?.nestedMarkdownDepth)) {
+        return originalHeadingOpen(tokens, idx, options, env, self);
+      }
       const lineNumber = token.map?.[0] + 1;
       if (lineNumber) {
         token.attrSet('data-source-line', String(lineNumber));
@@ -769,7 +788,7 @@ class PreviewEngine {
 
   render(markdownSource) {
     const renderVersion = ++this.renderVersion;
-    this.revokeImageObjectUrls();
+    this.revokeObjectUrls();
 
     if (!markdownSource.trim()) {
       this.container.innerHTML = '<div class="empty-state compact">预览区暂无内容</div>';
@@ -779,16 +798,17 @@ class PreviewEngine {
     this.headingIds.clear();
     this.container.innerHTML = this.md.render(markdownSource);
     this.resolveImageSources(renderVersion);
+    this.resolveMediaLinks(renderVersion);
     this.renderMermaidDiagrams();
   }
 
-  revokeImageObjectUrls() {
-    this.imageObjectUrls.forEach((url) => URL.revokeObjectURL(url));
-    this.imageObjectUrls.clear();
+  revokeObjectUrls() {
+    this.objectUrls.forEach((url) => URL.revokeObjectURL(url));
+    this.objectUrls.clear();
   }
 
   async resolveImageSources(renderVersion) {
-    if (!this.resolveImageSource) {
+    if (!this.resolveResourceSource) {
       return;
     }
 
@@ -800,7 +820,7 @@ class PreviewEngine {
       }
 
       try {
-        const resolvedSource = await this.resolveImageSource(originalSource);
+        const resolvedSource = await this.resolveResourceSource(originalSource);
         if (!resolvedSource) {
           return;
         }
@@ -814,12 +834,69 @@ class PreviewEngine {
 
         image.setAttribute('src', resolvedSource);
         if (resolvedSource.startsWith('blob:')) {
-          this.imageObjectUrls.add(resolvedSource);
+          this.objectUrls.add(resolvedSource);
         }
       } catch (error) {
         console.warn('Failed to resolve preview image', originalSource, error);
       }
     }));
+  }
+
+  // 指向本地媒体文件（.mp4/.mp3 …）的链接在预览里回显为内联播放器；
+  // 解析不到文件（例如未勾选下载的空链接 `[名字]()`）就保持原样，不伪造来源。
+  async resolveMediaLinks(renderVersion) {
+    if (!this.resolveResourceSource) {
+      return;
+    }
+
+    const links = Array.from(this.container.querySelectorAll('a[href]'));
+    await Promise.all(links.map(async (link) => {
+      const originalSource = link.getAttribute('href');
+      const mediaKind = resourceMediaKind(originalSource);
+      if (!mediaKind) {
+        return;
+      }
+
+      try {
+        const resolvedSource = await this.resolveResourceSource(originalSource);
+        if (!resolvedSource) {
+          return;
+        }
+
+        if (this.renderVersion !== renderVersion || !link.isConnected) {
+          if (resolvedSource.startsWith('blob:')) {
+            URL.revokeObjectURL(resolvedSource);
+          }
+          return;
+        }
+
+        link.replaceWith(this.buildMediaElement(mediaKind, resolvedSource, link.textContent || originalSource));
+        if (resolvedSource.startsWith('blob:')) {
+          this.objectUrls.add(resolvedSource);
+        }
+      } catch (error) {
+        console.warn('Failed to resolve preview media', originalSource, error);
+      }
+    }));
+  }
+
+  buildMediaElement(mediaKind, resolvedSource, label) {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'preview-media';
+
+    const media = document.createElement(mediaKind);
+    media.className = `preview-media-${mediaKind}`;
+    media.controls = true;
+    media.preload = 'metadata';
+    media.src = resolvedSource;
+    wrapper.appendChild(media);
+
+    const caption = document.createElement('div');
+    caption.className = 'preview-media-caption';
+    caption.textContent = String(label || '').trim() || resolvedSource;
+    wrapper.appendChild(caption);
+
+    return wrapper;
   }
 
   async renderMermaidDiagrams() {
@@ -1285,7 +1362,7 @@ class MarkdownStudioApp {
     this.layout = new LayoutController(this.root.querySelector('.studio-shell'));
     this.editor = new EditorCore(this.root.querySelector('#editorHost'));
     this.preview = new PreviewEngine(this.root.querySelector('#previewHost'), {
-      resolveImageSource: (source) => this.resolvePreviewImageSource(source)
+      resolveResourceSource: (source) => this.resolvePreviewResourceSource(source)
     });
     this.outline = new OutlineManager(this.root.querySelector('#outlineHost'), this.editor, this.preview);
     this.scrollSync = new EditorPreviewScrollSync(this.editor, this.preview);
@@ -1683,7 +1760,7 @@ class MarkdownStudioApp {
     return imported;
   }
 
-  async resolvePreviewImageSource(source) {
+  async resolvePreviewResourceSource(source) {
     const workspacePath = this.currentFile?.path || (this.fs.rootHandle ? this.snapshotFile?.path : '');
     if (workspacePath) {
       const resourcePath = resolveWorkspaceResourcePath(source, workspacePath);

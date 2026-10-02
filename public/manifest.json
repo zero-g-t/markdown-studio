@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Markdown Studio",
-  "description": "A local-first Markdown editor with directory tree, live preview, outline navigation, and autosave.",
+  "description": "A local-first Markdown editor with directory tree, live preview, outline, autosave, plus Feishu doc to Markdown download.",
   "version": "0.1.0",
   "action": {
     "default_title": "Open Markdown Studio"
@@ -10,12 +10,32 @@
     "service_worker": "background.js",
     "type": "module"
   },
-  "host_permissions": ["file:///*"],
-  "permissions": ["storage"],
+  "host_permissions": [
+    "file:///*",
+    "https://*.feishu.cn/*",
+    "https://*.feishu.net/*",
+    "https://*.larksuite.com/*",
+    "https://*.feishu-pre.net/*",
+    "https://*.larkoffice.com/*",
+    "https://*.larkenterprise.com/*"
+  ],
+  "permissions": ["storage", "scripting"],
   "content_scripts": [
     {
       "matches": ["file:///*"],
       "js": ["open-md-file.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://*.feishu.cn/*",
+        "https://*.feishu.net/*",
+        "https://*.larksuite.com/*",
+        "https://*.feishu-pre.net/*",
+        "https://*.larkoffice.com/*",
+        "https://*.larkenterprise.com/*"
+      ],
+      "js": ["bundles/feishu-content.js"],
       "run_at": "document_idle"
     }
   ],
