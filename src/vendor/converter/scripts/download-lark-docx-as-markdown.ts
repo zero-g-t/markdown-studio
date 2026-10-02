@@ -4,7 +4,7 @@ import { Minute, OneHundred, Second, waitFor } from '@dolphin/common'
 import { fileSave, supported } from 'browser-fs-access'
 import { fs, configure } from '@zip.js/zip.js'
 import { safeNormalizeFileName } from '@/lib/utils'
-// [markdown-studio 适配缝 4/4] 下载清单与勾选，详见下方 main() 里的插入点
+// [markdown-studio 适配缝 4/5] 下载清单与勾选，详见下方 main() 里的插入点
 import { applyDownloadSelection } from '@/feishu/download/selection'
 import { cluster } from 'radash'
 import { CommonTranslationKey, en, Namespace, zh } from '../common/i18n'
@@ -469,24 +469,33 @@ interface PrepareResult {
 const prepare = async (): Promise<PrepareResult> => {
   const checkIsReady = () => docx.isReady({ checkWhiteboard: true })
 
-  let recoverScrollTop
-
-  if (!checkIsReady()) {
-    const initialScrollTop = docx.container?.scrollTop ?? 0
-    recoverScrollTop = () => {
-      docx.scrollTo({
-        top: initialScrollTop,
-        behavior: 'instant',
-      })
-    }
-
-    let top = 0
-
+  /*
+   * ==========================================================================
+   * [markdown-studio 适配缝 5/5]
+   *
+   * 飞书按视口懒加载块：没进过视口的块在模型里是 `pending` 或 `fallback`，而
+   * `_transform` 的 `default` 分支会把 fallback 静默丢成 null —— 下载结果就缺
+   * 图片/附件/画板（「只有滚到过的地方才下载得到」）。
+   *
+   * 上游只在 `isReady()` 返回 false 时才滚动，但 `isReady()` 会把「真实类型已知
+   * 的非白板 fallback」判成就绪，于是经常一次都不滚，后面的内容永远不加载。
+   *
+   * 所以这里不再拿 `isReady()` 当滚动开关：每次下载都先把整篇文档自上而下分步
+   * 走一遍（每一步让新的一段进入视口，触发懒加载），再沿用上游原有的
+   * 「滚到底部 + 等就绪」循环收尾。滚动位置由 recoverScrollTop 在下载结束时还原；
+   * 内容有没有加载完仍由上游 `isReady()` 判定，这里不做补救、也不伪造结果。
+   * ==========================================================================
+   */
+  const container = docx.container
+  const initialScrollTop = container?.scrollTop ?? 0
+  const recoverScrollTop = () => {
     docx.scrollTo({
-      top,
+      top: initialScrollTop,
       behavior: 'instant',
     })
+  }
 
+  if (container) {
     const maxTryTimes = OneHundred
     let tryTimes = 0
 
@@ -500,17 +509,35 @@ const prepare = async (): Promise<PrepareResult> => {
       },
     })
 
-    while (!checkIsReady() && tryTimes <= maxTryTimes) {
+    // 1. 自上而下分步滚动：每一段都进过一次视口，触发懒加载。
+    //    scrollHeight 会随加载不断变大，所以循环条件每轮重新求值。
+    const step = Math.max(Math.floor(container.clientHeight * 0.9), 200)
+
+    for (
+      let top = 0;
+      top < container.scrollHeight && tryTimes <= maxTryTimes;
+      top += step
+    ) {
       docx.scrollTo({
         top,
+        behavior: 'instant',
+      })
+
+      await waitFor(0.3 * Second)
+
+      tryTimes++
+    }
+
+    // 2. 上游原有的循环：停在底部等最后一批块就绪。
+    while (!checkIsReady() && tryTimes <= maxTryTimes) {
+      docx.scrollTo({
+        top: container.scrollHeight,
         behavior: 'smooth',
       })
 
       await waitFor(0.4 * Second)
 
       tryTimes++
-
-      top = docx.container?.scrollHeight ?? 0
     }
 
     Toast.remove(TranslationKey.SCROLL_DOCUMENT)
@@ -568,7 +595,7 @@ const main = async (options: { signal?: AbortSignal } = {}) => {
 
   /*
    * ==========================================================================
-   * [markdown-studio 适配缝 4/4]
+   * [markdown-studio 适配缝 4/5]
    *
    * 下载清单与勾选：把「待下载清单」报给悬浮 UI，等用户勾选，再按勾选结果过滤
    * images / files（原地剔除，不碰 root —— 未勾选项在 Markdown 里仍是原来的
