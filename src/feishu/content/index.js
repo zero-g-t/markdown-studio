@@ -17,6 +17,7 @@ import {
   AGGREGATE_PROGRESS_KEYS,
   FEISHU_EVENT,
   POST_MESSAGE_FLAG,
+  RUNTIME_MESSAGE_FETCH_IMAGE,
   RUNTIME_MESSAGE_SITE_DOWNLOAD
 } from '../protocol.js';
 import { DEFAULT_THEME_COLOR, resolveThemeColor } from '../../shared/theme-colors.js';
@@ -53,6 +54,8 @@ class ProviderController {
     this.selected = new Set();
     // 是否处于「一次有效运行」中：用户取消后，MAIN 侧迟到的终态事件必须被忽略
     this.activeRun = false;
+    // 本轮运行是否已由用户点过「开始下载」：跨域代抓只认这一个窗口（见 relayImageFetch）
+    this.selectionConfirmed = false;
     this.handleWindowMessage = (event) => this.receiveMessage(event);
     this.handleStorageChanged = (changes, areaName) => this.applyStorageTheme(changes, areaName);
   }
@@ -108,6 +111,7 @@ class ProviderController {
     }
 
     this.activeRun = true;
+    this.selectionConfirmed = false;
     this.phase = BUTTON_PHASE.SCANNING;
     this.percent = null;
     this.entries = [];
@@ -149,6 +153,7 @@ class ProviderController {
     }
 
     this.phase = BUTTON_PHASE.DOWNLOADING;
+    this.selectionConfirmed = true;
     this.percent = null;
     this.entries = [];
     this.groupPercents.clear();
@@ -167,6 +172,7 @@ class ProviderController {
     }
 
     this.activeRun = false;
+    this.selectionConfirmed = false;
     this.phase = BUTTON_PHASE.IDLE;
     this.manifest = [];
     this.selected = new Set();
@@ -234,6 +240,9 @@ class ProviderController {
       case FEISHU_EVENT.MANIFEST:
         this.applyManifest(data.items);
         break;
+      case FEISHU_EVENT.FETCH_IMAGE:
+        this.relayImageFetch(data);
+        break;
       case FEISHU_EVENT.DONE:
         if (!this.activeRun) {
           return;
@@ -254,6 +263,49 @@ class ProviderController {
       default:
         break;
     }
+  }
+
+  /*
+   * 跨域图片代抓中继：MAIN world 的 fetch 读不到没有 CORS 头的跨域响应体，
+   * 由这里转给 Service Worker（扩展权限不受页面同源策略限制）。
+   * 一次请求只转一次，不重试：失败原因原样回传，由 MAIN 侧如实上报。
+   *
+   * 收口：MAIN world 与页面同源，postMessage 无法区分「转换器发的」与「页面伪造的」，
+   * 所以只认「本轮运行 + 用户点过开始下载 + 正处于下载阶段」这一个窗口。
+   * 正常流程里图片下载恰好只发生在这一窗口内（有图必先经清单勾选），因此不改变任何合法行为；
+   * 窗口之外一律拒绝，避免把扩展当成任意 URL 的带凭据代理。
+   */
+  relayImageFetch({ requestId, url }) {
+    const reply = (payload) => {
+      window.postMessage(
+        {
+          [POST_MESSAGE_FLAG]: true,
+          event: FEISHU_EVENT.FETCH_IMAGE_RESULT,
+          requestId,
+          ...payload
+        },
+        '*'
+      );
+    };
+
+    if (!this.activeRun || !this.selectionConfirmed || this.phase !== BUTTON_PHASE.DOWNLOADING) {
+      reply({ ok: false, error: '当前不在图片下载流程中，已拒绝代抓' });
+      return;
+    }
+
+    chrome.runtime
+      .sendMessage({ type: RUNTIME_MESSAGE_FETCH_IMAGE, url })
+      .then((response) => {
+        if (response?.ok) {
+          reply({ ok: true, base64: response.base64, contentType: response.contentType });
+          return;
+        }
+
+        reply({ ok: false, error: response?.error || '扩展抓取失败' });
+      })
+      .catch((error) => {
+        reply({ ok: false, error: error?.message || String(error) });
+      });
   }
 
   applyManifest(items) {

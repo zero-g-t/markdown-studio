@@ -9,6 +9,19 @@
 // 悬浮 UI → Service Worker：请求注入某个站点的转换器
 export const RUNTIME_MESSAGE_SITE_DOWNLOAD = 'MD_STUDIO_SITE_DOWNLOAD';
 
+/*
+ * 悬浮 UI → Service Worker：请求用扩展权限代抓一张跨域图片。
+ *
+ * 为什么需要它：转换器跑在页面 MAIN world，那里的 fetch 受页面同源策略约束，
+ * 没有 Access-Control-Allow-Origin 的跨域图（如 GitHub 的 camo.githubusercontent.com 反代）
+ * 连响应体都读不到，只能报 "Failed to fetch"。Service Worker 持有 host_permissions，
+ * 不受 CORS 限制，因此这类图由它取回二进制、base64 回传。
+ *
+ * 该常量在 public/background.js 里有一份同名字符串副本（public/ 下的脚本不经打包，无法 import），
+ * 两边必须保持一致。
+ */
+export const RUNTIME_MESSAGE_FETCH_IMAGE = 'MD_STUDIO_FETCH_IMAGE';
+
 // 转换器 → 悬浮 UI：window.postMessage 载荷上的标记，避免与页面自身消息混淆
 export const POST_MESSAGE_FLAG = '__mdStudioFeishu';
 
@@ -22,7 +35,11 @@ export const FEISHU_EVENT = {
   // 成功落盘
   DONE: 'done',
   // 失败（含「这不是一个飞书文档页面」这类无法转换的情况）
-  FAILED: 'failed'
+  FAILED: 'failed',
+  // 跨域图片代抓请求（MAIN → ISOLATED）：载荷 { requestId, url }
+  FETCH_IMAGE: 'fetch-image',
+  // 跨域图片代抓结果（ISOLATED → MAIN）：载荷 { requestId, ok, base64?, contentType?, error? }
+  FETCH_IMAGE_RESULT: 'fetch-image-result'
 };
 
 /*

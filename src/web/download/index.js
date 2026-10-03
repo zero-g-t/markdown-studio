@@ -13,6 +13,8 @@
  *     不发 FAILED（悬浮 UI 自己已经把状态恢复成可重来）；
  *   · 单张图片下载失败 → 该图在 Markdown 里保留远程链接，并在进度面板与完成文案里
  *     如实说明失败数量。不重试、不兜底、不自动补救；
+ *   · 图片传输路径按同源/跨域静态二选一（同源走页面 fetch，跨域交 Service Worker 代抓，
+ *     见 images.js），不是失败后的补偿机制；
  *   · 进度事件用 'image' 作 key，悬浮 UI 的圆环才会聚合出百分比。
  */
 import { configure, fs } from '@zip.js/zip.js';
