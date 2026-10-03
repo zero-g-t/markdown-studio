@@ -17,7 +17,10 @@ function storageSet(area, values) {
  * 这份列表必须与 src/feishu/site-providers.js 的 PROVIDERS 保持一致：
  * 新增站点适配器时两边都要加。
  */
-const SITE_DOWNLOAD_BUNDLES = new Set(['bundles/feishu-download.js']);
+const SITE_DOWNLOAD_BUNDLES = new Set([
+  'bundles/feishu-download.js',
+  'bundles/web-download.js'
+]);
 const SITE_DOWNLOAD_MESSAGE = 'MD_STUDIO_SITE_DOWNLOAD';
 
 function handleSiteDownload(message, sender, sendResponse) {
@@ -33,7 +36,10 @@ function handleSiteDownload(message, sender, sendResponse) {
     return;
   }
 
-  // 转换器必须读飞书页面运行时全局对象，因此注入到 MAIN world
+  // 转换器必须处于页面自身的 JS 上下文：
+  //   · 飞书分支要读飞书页面运行时全局对象（window.PageMain）；
+  //   · 通用网页分支要读 shadowRoot、并用页面上下文落盘。
+  // 因此统一注入到 MAIN world。
   chrome.scripting
     .executeScript({
       files: [message.bundle],

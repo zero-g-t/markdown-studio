@@ -6,3 +6,4 @@ test/
 dist/
 release/
 docs/
+.codebuddy/

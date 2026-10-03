@@ -9,6 +9,9 @@
  *   4. 用户取消时抛 AbortError，走上游自己的中止路径（不产生错误提示，干净退出）。
  *
  * 清单与下载由同一次提取产出，不会出现「清单没列、下载却下了」的漏项。
+ *
+ * 分层：`requestManifestSelection()` 是「与节点无关」的清单握手（上报 → 等勾选 → 取消即中止），
+ * 飞书分支与通用网页分支共用；`applyDownloadSelection()` 只在握手之上加「按勾选过滤 mdast 节点」。
  */
 import type { mdast } from '@dolphin/lark';
 import { FEISHU_EVENT, MANIFEST_GROUP, POST_MESSAGE_FLAG } from '../protocol';
@@ -139,16 +142,15 @@ const keepSelected = <T extends mdast.Image | mdast.Link>(
   nodes.splice(0, nodes.length, ...kept);
 };
 
-export const applyDownloadSelection = async (payload: {
-  images: mdast.Image[];
-  files: mdast.Link[];
-}): Promise<void> => {
-  const entries = buildEntries(payload);
-
-  await probeSizes(entries.filter((entry) => entry.item.group === MANIFEST_GROUP.FILE));
-
+/**
+ * 清单握手：把待下载清单报给悬浮 UI，等用户勾选，返回被勾选的 id 集合。
+ * 用户取消时抛 AbortError（调用方负责识破并干净退出）。
+ *
+ * 与具体节点类型无关，飞书分支与通用网页分支共用。
+ */
+export const requestManifestSelection = async (items: ManifestItem[]): Promise<Set<string>> => {
   ensureSelectionListener();
-  post(FEISHU_EVENT.MANIFEST, { items: entries.map((entry) => entry.item) });
+  post(FEISHU_EVENT.MANIFEST, { items });
 
   const answer = await new Promise<SelectionAnswer>((resolve) => {
     pendingSelection = resolve;
@@ -159,7 +161,19 @@ export const applyDownloadSelection = async (payload: {
     throw new DOMException('用户取消了下载选择', 'AbortError');
   }
 
-  const selected = new Set(answer.selectedIds);
+  return new Set(answer.selectedIds);
+};
+
+export const applyDownloadSelection = async (payload: {
+  images: mdast.Image[];
+  files: mdast.Link[];
+}): Promise<void> => {
+  const entries = buildEntries(payload);
+
+  await probeSizes(entries.filter((entry) => entry.item.group === MANIFEST_GROUP.FILE));
+
+  const selected = await requestManifestSelection(entries.map((entry) => entry.item));
+
   keepSelected(payload.images, entries.slice(0, payload.images.length), selected);
   keepSelected(payload.files, entries.slice(payload.images.length), selected);
 };

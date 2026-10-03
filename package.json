@@ -1,6 +1,6 @@
 {
   "name": "markdown-studio-extension",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "license": "SEE LICENSE IN LICENSE",
   "type": "module",
@@ -20,6 +20,7 @@
     "@zip.js/zip.js": "^2.7.53",
     "browser-fs-access": "^0.35.0",
     "codemirror": "^6.0.2",
+    "defuddle": "^0.19.2",
     "es-toolkit": "^1.39.10",
     "filenamify": "^6.0.0",
     "hast-util-to-html": "^9.0.5",
@@ -36,6 +37,7 @@
     "mdast-util-to-markdown": "^2.1.2",
     "mermaid": "^11.15.0",
     "radash": "^12.1.0",
+    "turndown": "^7.2.0",
     "uuid": "^13.0.0"
   },
   "devDependencies": {

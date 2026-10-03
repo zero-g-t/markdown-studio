@@ -2,7 +2,8 @@
  * 内容脚本入口（ISOLATED world）。
  *
  * 职责：
- *   1. 判断当前页面是否由某个站点适配器接管（v1 只有飞书文档页）；
+ *   1. 判断当前页面是否由某个站点适配器接管（飞书文档页 / 其它 http/https 网页）；
+ *      —— 本文件与具体站点无关，两个适配器共用同一份实现；
  *   2. 挂载右下角悬浮按钮 + 圆形进度环 + 状态面板（含下载清单），并跟随 markdown-studio 的主题色；
  *   3. 点击时请求 Service Worker 向 MAIN world 注入转换器；
  *   4. 接收 MAIN world 上报的清单 / 进度 / 结果，回传用户勾选；驱动 UI。
@@ -223,6 +224,11 @@ class ProviderController {
     switch (data.event) {
       case FEISHU_EVENT.PROGRESS:
         this.applyEntries(data.entries);
+        // 有些适配器不保证会上报清单（通用网页分支在正文没有图片时不会进 SELECTING），
+        // 收到第一条进度就离开「扫描中」，否则会一直停在扫描文案上。
+        if (this.provider.skipManifestPhase && this.phase === BUTTON_PHASE.SCANNING) {
+          this.phase = BUTTON_PHASE.DOWNLOADING;
+        }
         this.render();
         break;
       case FEISHU_EVENT.MANIFEST:
