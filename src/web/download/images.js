@@ -4,12 +4,12 @@
  * 只做一件事：把勾选的图片 URL 抓成 Blob。不做重试、不做兜底、不改写内容 ——
  * 单张失败只记录失败原因，由调用方决定「保留远程链接 + 如实上报」，而不是悄悄补救。
  *
- * 传输路径按「图片是否与页面同源」静态二选一（不按成败切换、不重试）：
- *   · 同源：页面上下文直接 fetch，沿用页面凭据；
- *   · 跨域：转交内容脚本 → Service Worker 代抓（扩展权限不受页面同源策略限制），
- *     这样没有 CORS 头的跨域图（GitHub 的 camo 反代、各类图床）也能本地化。
- *     抓回来的字节走 base64 跨 world 传输（内容脚本的 runtime 消息只接受可序列化值），
- *     在本模块内解回 Blob。
+ * 传输路径（详见下方 fetchImageByTransport 的注释）：
+ *   · 同源：页面上下文 fetch；
+ *   · 跨域：先页面 fetch（带页面 Origin/Referer，防盗链站点认这个）；读不到响应体时才改由
+ *     内容脚本 → Service Worker 代抓（扩展权限不受页面同源策略限制），这样没有 CORS 头的
+ *     跨域图（GitHub 的 camo 反代、各类图床）也能本地化。
+ *     代抓的字节走 base64 跨 world 传输（runtime 消息只接受可序列化值），在本模块内解回 Blob。
  */
 import { FEISHU_EVENT, POST_MESSAGE_FLAG } from '../../feishu/protocol.js';
 
@@ -148,8 +148,8 @@ async function fetchCrossOriginImage(url) {
 }
 
 /*
- * 同源判定用页面自身的 origin：同源图一定读得到，就走页面 fetch（保留凭据，也保留页面 Referer）；
- * 其余一律交扩展抓，避免再把「没有 CORS 头」当成必然失败。URL 解析异常按跨域处理。
+ * 同源判定用页面自身的 origin：同源图一定读得到，就走页面 fetch（保留凭据，也保留页面 Referer）。
+ * URL 解析异常按跨域处理（页面侧没有可靠凭据可带）。
  */
 function isSameOrigin(url) {
   try {
@@ -159,8 +159,42 @@ function isSameOrigin(url) {
   }
 }
 
+/*
+ * 「响应连读都读不到」的判定：fetch 被同源策略拦下、以及网络层失败，在 JS 层都表现为
+ * TypeError（拿不到 status、拿不到 body）。服务器给出的错误码不走这里 ——
+ * fetchImage 对非 2xx 抛的是普通 Error(`HTTP 403`)，说明响应可读，必须如实上报。
+ */
+function isUnreadable(error) {
+  return error instanceof TypeError;
+}
+
+/*
+ * 取字节的两条通道，分工依据是「页面上下文能不能读到响应体」——这件事只有发出去才知道：
+ *
+ *   · 同源：页面 fetch 一定读得到，直接用；
+ *   · 跨域：先按页面上下文 fetch（自带页面的 Origin/Referer/凭据，防盗链站点认这个）。
+ *     对方给了 CORS 头就读得到，用它的结果；读不到（TypeError）才改由扩展权限代抓 ——
+ *     扩展抓的请求没有页面 Referer（扩展脚本地址是 chrome-extension:// 方案，按规范会被丢弃），
+ *     对 Sina 图床这类「无 Referer 就 403」的站点会被拒，所以不能无条件取代页面 fetch。
+ *
+ * 这是经用户批准的、有实测依据的两段式分工（2026-10-03：weibo 的 wx*.sinaimg.cn 图在
+ * 无 Referer 时被 403，而页面 fetch 正常 200 + type=cors），不是「失败后重试」：
+ * 每张图最多换一次通道，且换通道的唯一触发条件是「规范上不可读」，服务器返回的错误码一律如实上报。
+ */
 async function fetchImageByTransport(url) {
-  return isSameOrigin(url) ? fetchImage(url) : fetchCrossOriginImage(url);
+  if (isSameOrigin(url)) {
+    return fetchImage(url);
+  }
+
+  try {
+    return await fetchImage(url);
+  } catch (error) {
+    if (!isUnreadable(error)) {
+      throw error;
+    }
+
+    return fetchCrossOriginImage(url);
+  }
 }
 
 /**

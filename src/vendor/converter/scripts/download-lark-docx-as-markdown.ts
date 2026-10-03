@@ -1,8 +1,8 @@
 import i18next from 'i18next'
 import { Toast, Docx, docx, type mdast } from '@dolphin/lark'
-import { Minute, OneHundred, Second, waitFor } from '@dolphin/common'
+import { Minute, OneHundred } from '@dolphin/common'
 import { fileSave, supported } from 'browser-fs-access'
-import { fs, configure } from '@zip.js/zip.js'
+import { BlobReader, TextReader, ZipWriter, configure } from '@zip.js/zip.js'
 import { safeNormalizeFileName } from '@/lib/utils'
 // [markdown-studio 适配缝 4/5] 下载清单与勾选，详见下方 main() 里的插入点
 import { applyDownloadSelection } from '@/feishu/download/selection'
@@ -11,6 +11,8 @@ import { CommonTranslationKey, en, Namespace, zh } from '../common/i18n'
 import { confirm } from '../common/notification'
 import { legacyFileSave } from '../common/legacy'
 import { reportBug } from '../common/issue'
+// [临时诊断] 面包屑：同时进 console.error 与悬浮面板条目。定位完删除。
+import { diagStep } from '@/feishu/download/toast-bridge'
 import {
   transformMentionUsers,
   UniqueFileName,
@@ -463,7 +465,6 @@ const downloadFiles = async (
 
 interface PrepareResult {
   isReady: boolean
-  recoverScrollTop?: () => void
 }
 
 const prepare = async (): Promise<PrepareResult> => {
@@ -471,86 +472,25 @@ const prepare = async (): Promise<PrepareResult> => {
 
   /*
    * ==========================================================================
-   * [markdown-studio 适配缝 5/5]
+   * [markdown-studio 适配缝 5/5 · 已按要求移除自动滚动]
    *
-   * 飞书按视口懒加载块：没进过视口的块在模型里是 `pending` 或 `fallback`，而
-   * `_transform` 的 `default` 分支会把 fallback 静默丢成 null —— 下载结果就缺
-   * 图片/附件/画板（「只有滚到过的地方才下载得到」）。
+   * 这里曾有一个「每次下载都自上而下分步滚一遍触发懒加载」的实现（以及上游原有的
+   * 「滚到底部 + 等就绪」循环）。现在**完全不自动滚动页面**：只在下载开始前做一次
+   * 就绪判定，内容没加载完就沿用上游的提示并中止（`CONTENT_LOADING` + DOWNLOAD_ABORTED），
+   * 由用户自己决定滚不滚、什么时候重试 —— 不再替用户滚动、也不再改动滚动位置。
    *
-   * 上游只在 `isReady()` 返回 false 时才滚动，但 `isReady()` 会把「真实类型已知
-   * 的非白板 fallback」判成就绪，于是经常一次都不滚，后面的内容永远不加载。
-   *
-   * 所以这里不再拿 `isReady()` 当滚动开关：每次下载都先把整篇文档自上而下分步
-   * 走一遍（每一步让新的一段进入视口，触发懒加载），再沿用上游原有的
-   * 「滚到底部 + 等就绪」循环收尾。滚动位置由 recoverScrollTop 在下载结束时还原；
-   * 内容有没有加载完仍由上游 `isReady()` 判定，这里不做补救、也不伪造结果。
+   * 代价（如实说明）：没进过视口的懒加载块不会被加载，未加载的图片/附件/画板会缺失，
+   * 与「内容未加载完」同一条提示路径，不伪造也不补内容。
    * ==========================================================================
    */
-  const container = docx.container
-  const initialScrollTop = container?.scrollTop ?? 0
-  const recoverScrollTop = () => {
-    docx.scrollTo({
-      top: initialScrollTop,
-      behavior: 'instant',
-    })
-  }
-
-  if (container) {
-    const maxTryTimes = OneHundred
-    let tryTimes = 0
-
-    Toast.loading({
-      content: i18next.t(TranslationKey.SCROLL_DOCUMENT),
-      keepAlive: true,
-      key: TranslationKey.SCROLL_DOCUMENT,
-      actionText: i18next.t(TranslationKey.CANCEL),
-      onActionClick: () => {
-        tryTimes = maxTryTimes
-      },
-    })
-
-    // 1. 自上而下分步滚动：每一段都进过一次视口，触发懒加载。
-    //    scrollHeight 会随加载不断变大，所以循环条件每轮重新求值。
-    const step = Math.max(Math.floor(container.clientHeight * 0.9), 200)
-
-    for (
-      let top = 0;
-      top < container.scrollHeight && tryTimes <= maxTryTimes;
-      top += step
-    ) {
-      docx.scrollTo({
-        top,
-        behavior: 'instant',
-      })
-
-      await waitFor(0.3 * Second)
-
-      tryTimes++
-    }
-
-    // 2. 上游原有的循环：停在底部等最后一批块就绪。
-    while (!checkIsReady() && tryTimes <= maxTryTimes) {
-      docx.scrollTo({
-        top: container.scrollHeight,
-        behavior: 'smooth',
-      })
-
-      await waitFor(0.4 * Second)
-
-      tryTimes++
-    }
-
-    Toast.remove(TranslationKey.SCROLL_DOCUMENT)
-  }
-
-  return {
-    isReady: checkIsReady(),
-    recoverScrollTop,
-  }
+  return { isReady: checkIsReady() }
 }
 
 const main = async (options: { signal?: AbortSignal } = {}) => {
   const { signal } = options
+
+  // [临时诊断] 面包屑：定位飞书「undefined」失败发生在哪一步。定位完删除（A~J 共 10 处）。
+  diagStep('[md-studio][diag] step A 进入 main')
 
   if (docx.isDoc) {
     Toast.warning({ content: i18next.t(TranslationKey.NOT_SUPPORT_DOC_1_0) })
@@ -564,7 +504,13 @@ const main = async (options: { signal?: AbortSignal } = {}) => {
     throw new Error(DOWNLOAD_ABORTED)
   }
 
-  const { isReady, recoverScrollTop } = await prepare()
+  // [临时诊断]
+  diagStep('[md-studio][diag] step B 通过 isDoc/isDocx 检查')
+
+  const { isReady } = await prepare()
+
+  // [临时诊断]
+  diagStep('[md-studio][diag] step C prepare 完成 | isReady =', isReady)
 
   if (!isReady) {
     Toast.warning({
@@ -582,6 +528,9 @@ const main = async (options: { signal?: AbortSignal } = {}) => {
     SettingKey.DownloadFileWithUniqueName,
   ])
 
+  // [临时诊断]
+  diagStep('[md-studio][diag] step D getSettings 完成')
+
   const { root, images, files, tableWithParents, mentionUsers } =
     docx.intoMarkdownAST({
       whiteboard: true,
@@ -591,7 +540,20 @@ const main = async (options: { signal?: AbortSignal } = {}) => {
       flatGrid: settings[SettingKey.Grid] === Grid.Flatten,
     })
 
+  // [临时诊断]
+  diagStep(
+    '[md-studio][diag] step E intoMarkdownAST 完成 | images =',
+    images.length,
+    '| files =',
+    files.length,
+    '| mentions =',
+    mentionUsers.length,
+  )
+
   await transformMentionUsers(mentionUsers)
+
+  // [临时诊断]
+  diagStep('[md-studio][diag] step F transformMentionUsers 完成')
 
   /*
    * ==========================================================================
@@ -607,6 +569,9 @@ const main = async (options: { signal?: AbortSignal } = {}) => {
    */
   await applyDownloadSelection({ images, files })
 
+  // [临时诊断]
+  diagStep('[md-studio][diag] step G applyDownloadSelection 完成')
+
   const recommendName = docx.pageTitle
     ? safeNormalizeFileName(docx.pageTitle.slice(0, OneHundred))
     : 'doc'
@@ -615,6 +580,9 @@ const main = async (options: { signal?: AbortSignal } = {}) => {
   const filename = `${recommendName}${ext}`
 
   const toBlob = async () => {
+    // [临时诊断]
+    diagStep('[md-studio][diag] step H toBlob 开始 | isZip =', isZip)
+
     Toast.loading({
       content: i18next.t(TranslationKey.STILL_SAVING),
       keepAlive: true,
@@ -630,8 +598,21 @@ const main = async (options: { signal?: AbortSignal } = {}) => {
     }
 
     const zipFileContent = async () => {
-      const zipFs = new fs.FS()
-
+      /*
+       * ======================================================================
+       * [markdown-studio 适配缝 6/6] 打包改用 zip.js 低层 API。
+       *
+       * 原来用 `new fs.FS()` + `addBlob/addText` + `exportBlob()`：exportBlob 走
+       * zip-fs 的并发导出层（bufferedWrite，所有条目并行写入），而该层把子条目的失败
+       * 原样再抛（`throw errorResult.reason`），里层还有多处「无原因」的流拆除
+       * （`abort()` / `error(reason)` / `throw cancelReason`，reason 可能是 undefined）。
+       * 结果：只要内部某一步失败，上层只能拿到一个「无原因的 undefined 拒绝」——
+       * 实测就是面板只报 undefined，既定位不到原因也修不了。
+       *
+       * 低层 API 顺序写入（一次只写一个条目）、错误原样冒泡带堆栈，且不再触发 fs 层的
+       * 临时 blob 溢写机制。zip 内容与原来一致（条目名不变，仍含 `images/` 前缀）。
+       * ======================================================================
+       */
       const imgs = images.filter(image => image.data?.fetchSources)
       const diagrams = images.filter(image => image.data?.fetchBlob)
 
@@ -681,22 +662,55 @@ const main = async (options: { signal?: AbortSignal } = {}) => {
           markdownFileName: recommendName,
         }),
       ])
-      results.flat(1).forEach(({ filename, content }) => {
-        zipFs.addBlob(filename, content)
-      })
+      // [临时诊断]
+      diagStep(
+        '[md-studio][diag] step I downloadFiles 完成 | 三个分组结果 =',
+        results.map(group => (Array.isArray(group) ? group.length : typeof group)).join('/'),
+      )
+
+      const entries = results.flat(1)
+      // [临时诊断] 压缩前把待写入的条目（名字 + 字节数）打出来：名字异常/空文件一眼可见
+      diagStep(
+        '[md-studio][diag] step K 待写入条目 =',
+        entries.map(({ filename, content }) => `${filename}(${content?.size ?? '?'})`).join(', ').slice(0, 400),
+      )
+
+      /*
+       * 输出侧不用 `BlobWriter`（它的内部临时 blob 机制在 Chrome 下输出超过约 10MiB 就失败，
+       * 且把错误吞成「无原因的 undefined 拒绝」；zip.js 2.22.0 实测，Node 下不复现）。
+       * 改用普通 WritableStream 收分片、最后自己拼 Blob：实测 12MB 单条 / 18MB 三条均正常。
+       */
+      const zipChunks: Uint8Array[] = []
+      const zipWriter = new ZipWriter(
+        new WritableStream<Uint8Array>({
+          write(chunk) {
+            zipChunks.push(chunk)
+          }
+        })
+      )
+
+      for (const { filename, content } of entries) {
+        // [临时诊断] 顺序写入：最后一条日志就是出错的条目
+        diagStep('[md-studio][diag] step K1 写入', filename, content.size)
+        await zipWriter.add(filename, new BlobReader(content))
+      }
 
       transformTableBySettings(tableWithParents, settings)
 
       const markdown = Docx.stringify(root)
+      diagStep('[md-studio][diag] step K2 md 生成完成 | 长度 =', markdown.length)
 
-      zipFs.addText(`${recommendName}.md`, markdown)
+      await zipWriter.add(`${recommendName}.md`, new TextReader(markdown))
+      await zipWriter.close()
+      diagStep('[md-studio][diag] step K3 zip 写入完成')
 
-      return await zipFs.exportBlob()
+      return new Blob(zipChunks, { type: 'application/zip' })
     }
 
     const content = isZip ? await zipFileContent() : singleFileContent()
 
-    recoverScrollTop?.()
+    // [临时诊断]
+    diagStep('[md-studio][diag] step J toBlob 完成 | blob.size =', content.size)
 
     return content
   }
@@ -735,6 +749,23 @@ main({
     })
   })
   .catch((error: unknown) => {
+    // [临时诊断] 定位飞书「undefined」失败：把 main() 的原始拒绝值/栈打到 console 与面板。定位完删除。
+    console.error(
+      '[md-studio][diag] feishu main() rejected | typeof =',
+      typeof error,
+      '| value =',
+      error,
+      '| stack =',
+      (error as { stack?: string } | null | undefined)?.stack,
+    )
+
+    diagStep(
+      '[md-studio][diag] step REJECTED | typeof =',
+      typeof error,
+      '| value =',
+      String(error),
+    )
+
     const aborted =
       error instanceof Error &&
       (error.name === 'AbortError' || error.message === DOWNLOAD_ABORTED)

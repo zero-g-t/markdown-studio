@@ -13,11 +13,12 @@
  *     不发 FAILED（悬浮 UI 自己已经把状态恢复成可重来）；
  *   · 单张图片下载失败 → 该图在 Markdown 里保留远程链接，并在进度面板与完成文案里
  *     如实说明失败数量。不重试、不兜底、不自动补救；
- *   · 图片传输路径按同源/跨域静态二选一（同源走页面 fetch，跨域交 Service Worker 代抓，
- *     见 images.js），不是失败后的补偿机制；
+ *   · 图片传输路径：同源走页面 fetch；跨域先页面 fetch（带页面 Referer，防盗链站点认这个），
+ *     仅当响应「规范上不可读」时才改由 Service Worker 代抓（见 images.js）；
+ *     服务器返回的错误码一律如实上报，不换通道、不重试；
  *   · 进度事件用 'image' 作 key，悬浮 UI 的圆环才会聚合出百分比。
  */
-import { configure, fs } from '@zip.js/zip.js';
+import { BlobReader, TextReader, ZipWriter, configure } from '@zip.js/zip.js';
 import { legacyFileSave } from '@/common/legacy';
 import { requestManifestSelection } from '@/feishu/download/selection';
 import { safeNormalizeFileName } from '@/lib/utils';
@@ -155,10 +156,35 @@ async function main() {
   let outputName;
 
   if (assets.length > 0) {
-    const zipFs = new fs.FS();
-    zipFs.addText(markdownName, markdown);
-    assets.forEach((asset) => zipFs.addBlob(asset.path, asset.blob));
-    blob = await zipFs.exportBlob();
+    /*
+     * 打包用 zip.js 低层 API（顺序写入），不用 `new fs.FS().exportBlob()`：
+     * exportBlob 走 zip-fs 的并发导出层，子条目失败会被 `throw errorResult.reason` 原样再抛，
+     * 而里层多处流拆除是无原因调用（abort()/error(reason)），失败原因会退化成 undefined ——
+     * 上层只能看到「无原因的拒绝」（飞书分支已实测踩到）。低层顺序写不会吞掉错误，
+     * 条目名保持 `assets/<名>` 与 `<标题>.md` 不变。
+     */
+    /*
+     * 输出侧不用 `BlobWriter`：它的内部临时 blob 机制在 Chrome 下输出超过约 10MiB 就会失败，
+     * 并把错误吞成「无原因的 undefined 拒绝」（zip.js 2.22.0 实测；同一份代码在 Node 下不复现）。
+     * 改用普通 WritableStream 收分片、最后自己拼 Blob：实测 12MB 单条 / 18MB 三条均正常。
+     */
+    const zipChunks = [];
+    const zipWriter = new ZipWriter(
+      new WritableStream({
+        write(chunk) {
+          zipChunks.push(chunk);
+        }
+      })
+    );
+
+    await zipWriter.add(markdownName, new TextReader(markdown));
+
+    for (const asset of assets) {
+      await zipWriter.add(asset.path, new BlobReader(asset.blob));
+    }
+
+    await zipWriter.close();
+    blob = new Blob(zipChunks, { type: 'application/zip' });
     outputName = `${baseName}.zip`;
   } else {
     blob = new Blob([markdown], { type: 'text/markdown;charset=utf-8' });
