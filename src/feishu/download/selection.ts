@@ -150,16 +150,11 @@ const keepSelected = <T extends mdast.Image | mdast.Link>(
  */
 export const requestManifestSelection = async (items: ManifestItem[]): Promise<Set<string>> => {
   ensureSelectionListener();
-  // [临时诊断] 定位飞书「undefined」失败：确认清单握手走到了哪一步。定位完删除。
-  console.log('[md-studio][diag] manifest 上报', items.length, '项');
   post(FEISHU_EVENT.MANIFEST, { items });
 
   const answer = await new Promise<SelectionAnswer>((resolve) => {
     pendingSelection = resolve;
   });
-
-  // [临时诊断]
-  console.log('[md-studio][diag] manifest 勾选结果', JSON.stringify(answer));
 
   if (answer.cancelled) {
     // 走上游的中止路径：main() 的 catch 认 AbortError 后直接停手，不产生错误提示

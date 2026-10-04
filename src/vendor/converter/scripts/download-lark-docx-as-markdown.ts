@@ -11,8 +11,6 @@ import { CommonTranslationKey, en, Namespace, zh } from '../common/i18n'
 import { confirm } from '../common/notification'
 import { legacyFileSave } from '../common/legacy'
 import { reportBug } from '../common/issue'
-// [临时诊断] 面包屑：同时进 console.error 与悬浮面板条目。定位完删除。
-import { diagStep } from '@/feishu/download/toast-bridge'
 import {
   transformMentionUsers,
   UniqueFileName,
@@ -489,8 +487,6 @@ const prepare = async (): Promise<PrepareResult> => {
 const main = async (options: { signal?: AbortSignal } = {}) => {
   const { signal } = options
 
-  // [临时诊断] 面包屑：定位飞书「undefined」失败发生在哪一步。定位完删除（A~J 共 10 处）。
-  diagStep('[md-studio][diag] step A 进入 main')
 
   if (docx.isDoc) {
     Toast.warning({ content: i18next.t(TranslationKey.NOT_SUPPORT_DOC_1_0) })
@@ -504,13 +500,9 @@ const main = async (options: { signal?: AbortSignal } = {}) => {
     throw new Error(DOWNLOAD_ABORTED)
   }
 
-  // [临时诊断]
-  diagStep('[md-studio][diag] step B 通过 isDoc/isDocx 检查')
 
   const { isReady } = await prepare()
 
-  // [临时诊断]
-  diagStep('[md-studio][diag] step C prepare 完成 | isReady =', isReady)
 
   if (!isReady) {
     Toast.warning({
@@ -528,8 +520,6 @@ const main = async (options: { signal?: AbortSignal } = {}) => {
     SettingKey.DownloadFileWithUniqueName,
   ])
 
-  // [临时诊断]
-  diagStep('[md-studio][diag] step D getSettings 完成')
 
   const { root, images, files, tableWithParents, mentionUsers } =
     docx.intoMarkdownAST({
@@ -540,20 +530,9 @@ const main = async (options: { signal?: AbortSignal } = {}) => {
       flatGrid: settings[SettingKey.Grid] === Grid.Flatten,
     })
 
-  // [临时诊断]
-  diagStep(
-    '[md-studio][diag] step E intoMarkdownAST 完成 | images =',
-    images.length,
-    '| files =',
-    files.length,
-    '| mentions =',
-    mentionUsers.length,
-  )
 
   await transformMentionUsers(mentionUsers)
 
-  // [临时诊断]
-  diagStep('[md-studio][diag] step F transformMentionUsers 完成')
 
   /*
    * ==========================================================================
@@ -569,8 +548,6 @@ const main = async (options: { signal?: AbortSignal } = {}) => {
    */
   await applyDownloadSelection({ images, files })
 
-  // [临时诊断]
-  diagStep('[md-studio][diag] step G applyDownloadSelection 完成')
 
   const recommendName = docx.pageTitle
     ? safeNormalizeFileName(docx.pageTitle.slice(0, OneHundred))
@@ -580,8 +557,6 @@ const main = async (options: { signal?: AbortSignal } = {}) => {
   const filename = `${recommendName}${ext}`
 
   const toBlob = async () => {
-    // [临时诊断]
-    diagStep('[md-studio][diag] step H toBlob 开始 | isZip =', isZip)
 
     Toast.loading({
       content: i18next.t(TranslationKey.STILL_SAVING),
@@ -662,18 +637,8 @@ const main = async (options: { signal?: AbortSignal } = {}) => {
           markdownFileName: recommendName,
         }),
       ])
-      // [临时诊断]
-      diagStep(
-        '[md-studio][diag] step I downloadFiles 完成 | 三个分组结果 =',
-        results.map(group => (Array.isArray(group) ? group.length : typeof group)).join('/'),
-      )
 
       const entries = results.flat(1)
-      // [临时诊断] 压缩前把待写入的条目（名字 + 字节数）打出来：名字异常/空文件一眼可见
-      diagStep(
-        '[md-studio][diag] step K 待写入条目 =',
-        entries.map(({ filename, content }) => `${filename}(${content?.size ?? '?'})`).join(', ').slice(0, 400),
-      )
 
       /*
        * 输出侧不用 `BlobWriter`（它的内部临时 blob 机制在 Chrome 下输出超过约 10MiB 就失败，
@@ -690,27 +655,20 @@ const main = async (options: { signal?: AbortSignal } = {}) => {
       )
 
       for (const { filename, content } of entries) {
-        // [临时诊断] 顺序写入：最后一条日志就是出错的条目
-        diagStep('[md-studio][diag] step K1 写入', filename, content.size)
         await zipWriter.add(filename, new BlobReader(content))
       }
 
       transformTableBySettings(tableWithParents, settings)
 
       const markdown = Docx.stringify(root)
-      diagStep('[md-studio][diag] step K2 md 生成完成 | 长度 =', markdown.length)
 
       await zipWriter.add(`${recommendName}.md`, new TextReader(markdown))
       await zipWriter.close()
-      diagStep('[md-studio][diag] step K3 zip 写入完成')
 
       return new Blob(zipChunks, { type: 'application/zip' })
     }
 
     const content = isZip ? await zipFileContent() : singleFileContent()
-
-    // [临时诊断]
-    diagStep('[md-studio][diag] step J toBlob 完成 | blob.size =', content.size)
 
     return content
   }
@@ -749,23 +707,6 @@ main({
     })
   })
   .catch((error: unknown) => {
-    // [临时诊断] 定位飞书「undefined」失败：把 main() 的原始拒绝值/栈打到 console 与面板。定位完删除。
-    console.error(
-      '[md-studio][diag] feishu main() rejected | typeof =',
-      typeof error,
-      '| value =',
-      error,
-      '| stack =',
-      (error as { stack?: string } | null | undefined)?.stack,
-    )
-
-    diagStep(
-      '[md-studio][diag] step REJECTED | typeof =',
-      typeof error,
-      '| value =',
-      String(error),
-    )
-
     const aborted =
       error instanceof Error &&
       (error.name === 'AbortError' || error.message === DOWNLOAD_ABORTED)

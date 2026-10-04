@@ -10,6 +10,10 @@
  *     内容脚本 → Service Worker 代抓（扩展权限不受页面同源策略限制），这样没有 CORS 头的
  *     跨域图（GitHub 的 camo 反代、各类图床）也能本地化。
  *     代抓的字节走 base64 跨 world 传输（runtime 消息只接受可序列化值），在本模块内解回 Blob。
+ *
+ * 页面这两条通道取字节时都显式绕开 HTTP 缓存（cache: 'no-store'，理由见 fetchImage 上方注释）：
+ * 页面里已经显示过的图，其 <img> 请求写入的缓存条目本就不可被 cors 读，复用它会让本地化
+ * 在「图片明明看得见」的时候失败。
  */
 import { FEISHU_EVENT, POST_MESSAGE_FLAG } from '../../feishu/protocol.js';
 
@@ -48,8 +52,28 @@ export function ensureExtension(name, contentType) {
   return CONTENT_TYPE_EXTENSIONS[type] ? `${name}${CONTENT_TYPE_EXTENSIONS[type]}` : name;
 }
 
+/*
+ * 取字节必须显式绕开 HTTP 缓存（cache: 'no-store'），否则会被页面自己的 <img> 毒掉：
+ *
+ * 页面里的 <img> 走的是 no-cors 请求，不带 Origin；而这类 CDN（实测 wx*.sinaimg.cn）
+ * 只在请求带 Origin 时才回 Access-Control-Allow-Origin，回 ACAO 时又漏发 Vary: Origin
+ * （实测响应头：带 Origin → 200 + ACAO: https://weibo.com；不带 Origin → 200 无 ACAO；
+ * 两者 Cache-Control: max-age=864000）。缓存键里没有 Origin，于是 <img> 先写入的那个
+ * 「无 ACAO」条目会被后面的 cors fetch 复用 —— fetch 因响应缺 ACAO 被 CORS 拦下、
+ * 抛 TypeError（控制台文案：No 'Access-Control-Allow-Origin' header is present），
+ * 于是本地化整篇文章的图都失败。
+ *
+ * 实测（同一台机器、全新 profile，同一张图）：
+ *   <img> 先加载 → fetch(url) 连续两次 "Failed to fetch"；
+ *   fetch(url, { cache: 'no-store' }) 连续三次 200 + type=cors；
+ *   fetch(url, { cache: 'reload' }) 也 200，但它要读缓存做条件请求，304 时仍可能沿用
+ *   缓存里的旧响应头，不如 no-store 确定。
+ *
+ * 这是「消除请求形态与缓存复用的不一致」，不是失败后补救：每个地址仍然只请求一次，
+ * 也没有任何重试；缓存里已有的字节重新取一遍，换的是结果确定可读。
+ */
 async function fetchImage(url) {
-  const response = await fetch(url);
+  const response = await fetch(url, { cache: 'no-store' });
 
   if (!response.ok) {
     throw new Error(`HTTP ${response.status}`);

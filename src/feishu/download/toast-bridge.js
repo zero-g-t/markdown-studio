@@ -40,42 +40,6 @@ function post(event, payload) {
   window.postMessage({ [POST_MESSAGE_FLAG]: true, event, ...payload }, '*');
 }
 
-/*
- * [临时诊断] 定位飞书「undefined」失败。全部走 console.error：
- * 用户 Console 的层级过滤会挡掉 console.log（上一轮诊断因此一条都没显示出来）。
- */
-function diag(level, options) {
-  const content = options?.content;
-
-  console.error(
-    '[md-studio][diag] toast',
-    level,
-    '| key =',
-    options?.key ?? '(default)',
-    '| typeof content =',
-    typeof content,
-    '| content =',
-    content === undefined ? '<undefined>' : String(content)
-  );
-}
-
-/*
- * [临时诊断] 面包屑：既打 console.error，也写进面板条目（面板最终会带着完整轨迹一起显示，
- * 截图就能看见走到哪一步）。写入器由 installProgressToast 安装。
- */
-let diagWriter = null;
-let diagSeq = 0;
-
-export function diagStep(...parts) {
-  // 调用点自带 '[md-studio][diag] step ' 前缀，这里剥掉一次，避免日志出现双前缀
-  const name = parts.map((part) => String(part)).join(' ').replace(/^\[md-studio\]\[diag\] step\s*/, '');
-
-  console.error('[md-studio][diag] step', name);
-
-  diagSeq += 1;
-  diagWriter?.(`diag:${String(diagSeq)}`, `diag step ${name}`);
-}
-
 export function installProgressToast() {
   const entries = new Map();
   let succeeded = false;
@@ -89,11 +53,6 @@ export function installProgressToast() {
   const write = (key, content, level) => {
     entries.set(key, { key, content, level, percent: extractPercent(content) });
     emitProgress();
-  };
-
-  // [临时诊断] 面包屑落进面板条目，且不会被 finish 清掉
-  diagWriter = (key, content) => {
-    write(key, content, 'info');
   };
 
   const finish = () => {
@@ -112,11 +71,9 @@ export function installProgressToast() {
 
   setToast({
     loading: ({ content, key = DEFAULT_KEY }) => {
-      diag('loading', { content, key });
       write(key, content, 'loading');
     },
     success: ({ content, key = DEFAULT_KEY }) => {
-      diag('success', { content, key });
       // 单张图片/附件失败时上游也会调 Toast.error，但只有最终成功才会走 Toast.success，
       // 因此 success 出现即判定整条链路成功。
       succeeded = true;
@@ -124,21 +81,17 @@ export function installProgressToast() {
       write(key, content, 'success');
     },
     warning: ({ content, key = DEFAULT_KEY }) => {
-      diag('warning', { content, key });
       failure = { content, level: 'warning' };
       write(key, content, 'warning');
     },
     error: ({ content, key = DEFAULT_KEY }) => {
-      diag('error', { content, key });
       failure = { content, level: 'error' };
       write(key, content, 'error');
     },
     info: ({ content, key = DEFAULT_KEY }) => {
-      diag('info', { content, key });
       write(key, content, 'info');
     },
     remove: (key) => {
-      console.error('[md-studio][diag] toast remove | key =', key);
       entries.delete(key);
 
       if (key === DOWNLOADING_KEY) {
@@ -152,6 +105,3 @@ export function installProgressToast() {
 }
 
 installProgressToast();
-
-// [临时诊断] 加载标记：确认页面跑的是带面包屑的这一版 bundle（陈旧产物会缺这一行）
-console.error('[md-studio][diag] bundle 已加载：feishu-download v3（带面包屑 + 面板轨迹）');
