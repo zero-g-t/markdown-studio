@@ -67,7 +67,7 @@ function clampPercent(percent) {
 
 function formatSize(size) {
   if (typeof size !== 'number' || size <= 0) {
-    return '体积未知';
+    return '大小未知';
   }
   if (size >= 1024 * 1024 * 1024) {
     return `${(size / 1024 / 1024 / 1024).toFixed(2)} GB`;
@@ -90,9 +90,8 @@ function renderManifestGroup(group, items, selected) {
   const rows = items
     .map((item) => {
       const isLarge = item.group === 'file' && typeof item.size === 'number' && item.size >= LARGE_FILE_BYTES;
-      const sizeCell = item.group === 'file'
-        ? `<span class="manifest-size${isLarge ? ' is-large' : ''}">${formatSize(item.size)}</span>`
-        : '<span></span>';
+      // 每一类（图片 / 画板与图表 / 附件）都显示大小；探测不到时如实写「大小未知」
+      const sizeCell = `<span class="manifest-size${isLarge ? ' is-large' : ''}">${formatSize(item.size)}</span>`;
 
       return `<li class="manifest-item">
         <label class="manifest-item-label">
@@ -331,7 +330,10 @@ export class FloatingButton {
     manifestCount.textContent = `已选 ${selectedCount}/${items.length}`;
     start.disabled = selectedCount === 0;
 
-    const signature = items.map((item) => `${item.id}:${selected.has(item.id) ? 1 : 0}`).join('|');
+    // 签名里带上 size：清单报出来后若体积探测结果才补上，也要重建一次 DOM
+    const signature = items
+      .map((item) => `${item.id}:${item.size ?? ''}:${selected.has(item.id) ? 1 : 0}`)
+      .join('|');
     if (signature === this.manifestSignature) {
       return;
     }

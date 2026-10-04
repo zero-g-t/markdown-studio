@@ -1,11 +1,41 @@
 // 主题色表：编辑器页面（src/main.js）与飞书页面上的悬浮按钮（src/feishu/content）共用同一份，
 // 保证「在编辑器里切主题色 → 飞书页面按钮跟着变」永远同源，不会出现两套色板漂移。
+//
+// 只保留三种：纯白（中性黑白，苹果式极简）、深蓝、护眼绿。
 export const THEME_COLORS = [
-  { id: 'teal', label: '青绿', hue: 170, accent: '#237a6b', strong: '#16594d', soft: '#dceee8' },
-  { id: 'blue', label: '靛蓝', hue: 221, accent: '#2563eb', strong: '#1d4ed8', soft: '#dbeafe' },
-  { id: 'violet', label: '紫罗兰', hue: 262, accent: '#7c3aed', strong: '#5b21b6', soft: '#ede9fe' },
-  { id: 'amber', label: '琥珀', hue: 28, accent: '#b45309', strong: '#92400e', soft: '#fef3c7' },
-  { id: 'rose', label: '玫红', hue: 347, accent: '#e11d48', strong: '#be123c', soft: '#ffe4e6' }
+  {
+    id: 'white',
+    label: '纯白',
+    hue: 220,
+    accent: '#1d1d1f',
+    strong: '#1d1d1f',
+    soft: '#f5f5f7',
+    // 纯白主题要走中性灰表面，不能让固定饱和度的色相推导把底色染蓝，故直接给整套表面色
+    surfaces: {
+      subtle: '#fafafa',
+      muted: '#f4f4f5',
+      border: '#e5e5e7',
+      borderStrong: '#d2d2d7',
+      canvas: '#f7f7f8',
+      textMuted: '#71717a'
+    }
+  },
+  {
+    id: 'blue',
+    label: '深蓝',
+    hue: 221,
+    accent: '#1d4ed8',
+    strong: '#1e3a8a',
+    soft: '#e4ebfb'
+  },
+  {
+    id: 'green',
+    label: '护眼绿',
+    hue: 145,
+    accent: '#2f9e6b',
+    strong: '#1f7a4f',
+    soft: '#e3f4ea'
+  }
 ];
 
 export const DEFAULT_THEME_COLOR = THEME_COLORS[0].id;
@@ -20,6 +50,11 @@ export function themeSurfacePalette(hue) {
     canvas: `hsl(${hue}, 28%, 96.5%)`,
     textMuted: `hsl(${hue}, 12%, 42%)`
   };
+}
+
+// 主题自带 surfaces 时优先用它的中性色板，否则按色相推导
+export function resolveThemeSurfaces(theme) {
+  return theme.surfaces || themeSurfacePalette(theme.hue);
 }
 
 export function resolveThemeColor(id) {

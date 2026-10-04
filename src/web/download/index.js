@@ -23,7 +23,14 @@ import { legacyFileSave } from '@/common/legacy';
 import { requestManifestSelection } from '@/feishu/download/selection';
 import { safeNormalizeFileName } from '@/lib/utils';
 import { MANIFEST_GROUP } from '../../feishu/protocol.js';
-import { entry, IMAGE_PROGRESS_KEY, postDone, postFailed, postProgress } from './progress.js';
+import {
+  entry,
+  IMAGE_PROGRESS_KEY,
+  PROBE_PROGRESS_KEY,
+  postDone,
+  postFailed,
+  postProgress
+} from './progress.js';
 import {
   applyLocalSources,
   buildMarkdown,
@@ -33,7 +40,7 @@ import {
   readContentDocument,
   serializeContent
 } from './extract.js';
-import { downloadImages, ensureExtension } from './images.js';
+import { downloadImages, ensureExtension, probeImageSizes } from './images.js';
 
 // MAIN world 下 Worker 容易受页面 CSP 限制。飞书 bundle 里的同名 configure 不跨 bundle 生效，
 // 这里是独立注入的另一份 zip.js 实例，必须自己关一次。
@@ -91,12 +98,19 @@ async function main() {
   let selectedIds = null;
 
   if (candidates.length > 0) {
+    // 清单里要和飞书一致地显示每个文件大小：先探测各图体积（只读 Content-Length）
+    const sizes = await probeImageSizes(candidates.map((candidate) => candidate.url), (state) => {
+      postProgress([
+        entry(PROBE_PROGRESS_KEY, `正在读取图片大小 ${state.done}/${state.total}`)
+      ]);
+    });
+
     selectedIds = await requestManifestSelection(
       candidates.map((candidate, index) => ({
         id: `i:${index}`,
         group: MANIFEST_GROUP.IMAGE,
         name: candidate.baseName,
-        size: null
+        size: sizes.get(candidate.url) ?? null
       }))
     );
   }

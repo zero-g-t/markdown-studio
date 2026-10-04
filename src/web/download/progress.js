@@ -13,6 +13,12 @@ import { FEISHU_EVENT, POST_MESSAGE_FLAG } from '../../feishu/protocol.js';
  */
 export const IMAGE_PROGRESS_KEY = 'image';
 
+/*
+ * 清单前的体积探测进度：故意不用 'image' —— 它不是下载百分比，
+ * 进了圆环聚合会让进度环在清单出现前先乱跳。
+ */
+export const PROBE_PROGRESS_KEY = 'probe';
+
 const post = (event, payload) => {
   window.postMessage({ [POST_MESSAGE_FLAG]: true, event, ...payload }, '*');
 };

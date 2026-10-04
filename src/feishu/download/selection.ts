@@ -91,13 +91,53 @@ const probeFileSize = async (file: mdast.Link): Promise<number | null> => {
   }
 };
 
+// 图片：先向上游要下载源地址，再只读响应头拿 Content-Length（与附件同一套做法）
+const probeImageSize = async (image: mdast.Image): Promise<number | null> => {
+  const fetchSources = image.data?.fetchSources;
+  if (!fetchSources) {
+    return null;
+  }
+
+  const controller = new AbortController();
+
+  try {
+    const sources = await fetchSources();
+    const url = sources?.src || sources?.originSrc;
+    if (!url) {
+      return null;
+    }
+
+    const response = await fetch(url, { cache: 'no-store', signal: controller.signal });
+    const contentLength = Number(response.headers.get('content-length'));
+
+    return response.ok && Number.isFinite(contentLength) && contentLength > 0 ? contentLength : null;
+  } catch {
+    return null;
+  } finally {
+    controller.abort();
+  }
+};
+
+// 附件与图片都能在清单阶段读到字节数；画板与图表要实时渲染后才有内容，无法预知，如实留空
+const probeEntrySize = async (entry: ItemEntry): Promise<number | null> => {
+  if (entry.item.group === MANIFEST_GROUP.FILE) {
+    return probeFileSize(entry.node as mdast.Link);
+  }
+
+  if (entry.item.group === MANIFEST_GROUP.IMAGE) {
+    return probeImageSize(entry.node as mdast.Image);
+  }
+
+  return null;
+};
+
 const probeSizes = async (entries: ItemEntry[]): Promise<void> => {
   const queue = [...entries];
 
   await Promise.all(
     Array.from({ length: Math.min(PROBE_CONCURRENCY, queue.length) }, async () => {
       for (let entry = queue.shift(); entry; entry = queue.shift()) {
-        entry.item.size = await probeFileSize(entry.node as mdast.Link);
+        entry.item.size = await probeEntrySize(entry);
       }
     })
   );
@@ -170,7 +210,7 @@ export const applyDownloadSelection = async (payload: {
 }): Promise<void> => {
   const entries = buildEntries(payload);
 
-  await probeSizes(entries.filter((entry) => entry.item.group === MANIFEST_GROUP.FILE));
+  await probeSizes(entries);
 
   const selected = await requestManifestSelection(entries.map((entry) => entry.item));
 

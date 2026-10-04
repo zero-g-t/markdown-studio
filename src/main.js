@@ -4,7 +4,7 @@ import markdownItTaskLists from 'markdown-it-task-lists';
 import mermaid from 'mermaid';
 import { extractOutlineItems, inlineTokensToText, slugifyHeadingText } from './outline.js';
 import { resolveFileResourceUrl, resolveWorkspaceResourcePath } from './resource-paths.js';
-import { THEME_COLORS, themeSurfacePalette } from './shared/theme-colors.js';
+import { THEME_COLORS, resolveThemeSurfaces } from './shared/theme-colors.js';
 import { basicSetup, EditorView } from 'codemirror';
 import { markdown } from '@codemirror/lang-markdown';
 import { EditorState, StateEffect, StateField } from '@codemirror/state';
@@ -2224,7 +2224,7 @@ class MarkdownStudioApp {
     rootStyle.setProperty('--accent-strong', theme.strong);
     rootStyle.setProperty('--accent-soft', theme.soft);
 
-    const surfaces = themeSurfacePalette(theme.hue);
+    const surfaces = resolveThemeSurfaces(theme);
     rootStyle.setProperty('--surface-subtle', surfaces.subtle);
     rootStyle.setProperty('--surface-muted', surfaces.muted);
     rootStyle.setProperty('--border', surfaces.border);

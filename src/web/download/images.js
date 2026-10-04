@@ -221,6 +221,60 @@ async function fetchImageByTransport(url) {
   }
 }
 
+/*
+ * 清单阶段的体积探测：只为拿 Content-Length，响应头到手就 abort，不读 body。
+ * 与飞书分支的 probeFileSize 同构 —— 同源 / 跨域都由页面上下文 fetch，
+ * 每个地址只请求一次；读不到（跨域缺 CORS 头、服务器不给长度、请求失败）如实记为 null，
+ * 由清单显示「大小未知」：不重试、不换通道、不下载。
+ *
+ * @param {string[]} urls 去重后的图片地址
+ * @param {(state: { done: number, total: number, url: string }) => void} [onProgress]
+ * @returns {Promise<Map<string, number | null>>} 键与传入 urls 一一对应
+ */
+export async function probeImageSizes(urls, onProgress) {
+  const sizes = new Map();
+  const queue = [...urls];
+  const total = queue.length;
+
+  if (total === 0) {
+    return sizes;
+  }
+
+  let done = 0;
+
+  const probeOne = async (url) => {
+    const controller = new AbortController();
+
+    try {
+      const response = await fetch(url, { cache: 'no-store', signal: controller.signal });
+      const contentLength = Number(response.headers.get('content-length'));
+
+      sizes.set(
+        url,
+        response.ok && Number.isFinite(contentLength) && contentLength > 0 ? contentLength : null
+      );
+    } catch {
+      sizes.set(url, null);
+    } finally {
+      controller.abort();
+      done += 1;
+      onProgress?.({ done, total, url });
+    }
+  };
+
+  const worker = async () => {
+    for (let url = queue.shift(); url; url = queue.shift()) {
+      await probeOne(url);
+    }
+  };
+
+  await Promise.all(
+    Array.from({ length: Math.min(IMAGE_CONCURRENCY, total) }, () => worker())
+  );
+
+  return sizes;
+}
+
 /**
  * 并发下载一批图片。
  *
