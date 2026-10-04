@@ -1,15 +1,13 @@
 import i18next from 'i18next'
 import { Toast, Docx, docx, type mdast } from '@dolphin/lark'
 import { Minute, OneHundred } from '@dolphin/common'
-import { fileSave, supported } from 'browser-fs-access'
-import { BlobReader, TextReader, ZipWriter, configure } from '@zip.js/zip.js'
 import { safeNormalizeFileName } from '@/lib/utils'
 // [markdown-studio 适配缝 4/5] 下载清单与勾选，详见下方 main() 里的插入点
 import { applyDownloadSelection } from '@/feishu/download/selection'
+// [markdown-studio 适配缝·落盘] 改为「文件夹 + md」并自动在新标签页打开，详见下方 main()
+import { saveClipToFolder } from '@/feishu/download/save'
 import { cluster } from 'radash'
 import { CommonTranslationKey, en, Namespace, zh } from '../common/i18n'
-import { confirm } from '../common/notification'
-import { legacyFileSave } from '../common/legacy'
 import { reportBug } from '../common/issue'
 import {
   transformMentionUsers,
@@ -18,13 +16,27 @@ import {
   transformTableBySettings,
 } from '../common/utils'
 import { getSettings, Grid } from '../common/settings'
-import { DownloadMethod, SettingKey } from '@/common/settings'
-
-configure({ useWebWorkers: false })
+import { SettingKey } from '@/common/settings'
 
 const uniqueFileName = new UniqueFileName()
 
 const DOWNLOAD_ABORTED = 'Download aborted'
+
+/*
+ * 上游把图片/附件放在 `images/`、`files/` 两个子目录里（连同 md 一起打进 zip）。
+ * 本仓库统一成 `assets/`，与通用网页分支一致。
+ */
+const ASSET_DIR = 'assets'
+
+/*
+ * [markdown-studio 适配缝 · 文件名保险]
+ *
+ * 落盘目标从 zip 条目变成了真实文件系统路径：文件名必须合法（Windows 不允许 `:` `*` `?` 等），
+ * 也不能带路径分隔符（否则会被写到别的层级）。这里对上游拼出来的名字再做一次规范化，
+ * 且**规范化结果同时用于 Markdown 里的引用与磁盘上的文件名**，两者始终一致。
+ */
+const toAssetFileName = (baseName: string): string =>
+  safeNormalizeFileName(baseName) || 'file'
 
 const enum TranslationKey {
   CONTENT_LOADING = 'content_loading',
@@ -35,6 +47,7 @@ const enum TranslationKey {
   FAILED_TO_DOWNLOAD = 'failed_to_download',
   DOWNLOAD_PROGRESS = 'download_progress',
   DOWNLOAD_COMPLETE = 'download_complete',
+  SAVED_TO_FOLDER = 'saved_to_folder',
   STILL_SAVING = 'still_saving',
   IMAGE = 'image',
   FILE = 'file',
@@ -68,6 +81,8 @@ i18next
           [TranslationKey.DOWNLOAD_PROGRESS]:
             '{{name}} download progress: {{progress}} %',
           [TranslationKey.DOWNLOAD_COMPLETE]: 'Download complete',
+          [TranslationKey.SAVED_TO_FOLDER]:
+            'Saved to the "{{folder}}" folder in your downloads and opened in the browser',
           [TranslationKey.IMAGE]: 'Image',
           [TranslationKey.FILE]: 'File',
           [TranslationKey.CANCEL]: 'Cancel',
@@ -90,6 +105,8 @@ i18next
           [TranslationKey.STILL_SAVING]: '仍在保存中（请不要刷新或关闭页面）',
           [TranslationKey.DOWNLOAD_PROGRESS]: '{{name}}下载进度：{{progress}}%',
           [TranslationKey.DOWNLOAD_COMPLETE]: '下载完成',
+          [TranslationKey.SAVED_TO_FOLDER]:
+            '已保存到下载目录的「{{folder}}」文件夹，并已在浏览器中打开',
           [TranslationKey.IMAGE]: '图片',
           [TranslationKey.FILE]: '文件',
           [TranslationKey.CANCEL]: '取消',
@@ -181,10 +198,11 @@ const downloadImage = async (
           const baseName = markdownFileName
             ? `${markdownFileName}-diagram.png`
             : 'diagram.png'
+          const safeBaseName = toAssetFileName(baseName)
           const name = useUUID
-            ? uniqueFileName.generateWithUUID(baseName)
-            : uniqueFileName.generate(baseName)
-          const filename = `images/${name}`
+            ? uniqueFileName.generateWithUUID(safeBaseName)
+            : uniqueFileName.generate(safeBaseName)
+          const filename = `${ASSET_DIR}/${name}`
 
           image.url = filename
 
@@ -205,10 +223,11 @@ const downloadImage = async (
           const baseName = markdownFileName
             ? `${markdownFileName}-${originName}`
             : originName
+          const safeBaseName = toAssetFileName(baseName)
           const name = useUUID
-            ? uniqueFileName.generateWithUUID(baseName)
-            : uniqueFileName.generate(baseName)
-          const filename = `images/${name}`
+            ? uniqueFileName.generateWithUUID(safeBaseName)
+            : uniqueFileName.generate(safeBaseName)
+          const filename = `${ASSET_DIR}/${name}`
 
           const { src } = sources
           if (isAborted()) {
@@ -305,10 +324,11 @@ const downloadFile = async (
     async () => {
       try {
         const baseName = markdownFileName ? `${markdownFileName}-${name}` : name
-        const filename = `files/${
+        const safeBaseName = toAssetFileName(baseName)
+        const filename = `${ASSET_DIR}/${
           useUUID
-            ? uniqueFileName.generateWithUUID(baseName)
-            : uniqueFileName.generate(baseName)
+            ? uniqueFileName.generateWithUUID(safeBaseName)
+            : uniqueFileName.generate(safeBaseName)
         }`
 
         const response = await fetchFile({ signal: controller.signal })
@@ -513,7 +533,6 @@ const main = async (options: { signal?: AbortSignal } = {}) => {
   }
 
   const settings = await getSettings([
-    SettingKey.DownloadMethod,
     SettingKey.Table,
     SettingKey.Grid,
     SettingKey.TextHighlight,
@@ -542,7 +561,7 @@ const main = async (options: { signal?: AbortSignal } = {}) => {
    * images / files（原地剔除，不碰 root —— 未勾选项在 Markdown 里仍是原来的
    * 空链接形态，与上游单个文件下载失败时的表现一致）。
    *
-   * 必须在计算 isZip / ext / filename 之前完成，否则一项都不勾也会给出 .zip 后缀。
+   * 必须在真正下载之前完成：未勾选项不该被下载，也不该出现在清单之外的地方。
    * 未经清单流程时（例如直接跑上游脚本）本函数立即返回，行为与上游 100% 一致。
    * ==========================================================================
    */
@@ -552,158 +571,99 @@ const main = async (options: { signal?: AbortSignal } = {}) => {
   const recommendName = docx.pageTitle
     ? safeNormalizeFileName(docx.pageTitle.slice(0, OneHundred))
     : 'doc'
-  const isZip = images.length > 0 || files.length > 0
-  const ext = isZip ? '.zip' : '.md'
-  const filename = `${recommendName}${ext}`
+  const markdownName = `${recommendName}.md`
 
-  const toBlob = async () => {
+  /*
+   * ========================================================================
+   * [markdown-studio 适配缝 · 落盘] 改为「文件夹 + md」，不再打 zip。
+   *
+   * 上游把 `images/`、`files/` 两个子目录连同 md 一起打进 zip；这里改成在浏览器默认
+   * 下载目录下建 `<标题>/`：两个子目录统一为 `assets/`（与通用网页分支一致），md 直接
+   * 放在文件夹根下，写完自动在新标签页打开。因此 `isZip` / `.zip` 后缀 /
+   * ShowSaveFilePicker 分支全部去掉 —— 输出形态只有一种。落盘通道见
+   * src/feishu/download/save.ts。
+   * ========================================================================
+   */
+  Toast.loading({
+    content: i18next.t(TranslationKey.STILL_SAVING),
+    keepAlive: true,
+    key: ToastKey.DOWNLOADING,
+  })
 
-    Toast.loading({
-      content: i18next.t(TranslationKey.STILL_SAVING),
-      keepAlive: true,
-      key: ToastKey.DOWNLOADING,
-    })
+  const imgs = images.filter(image => image.data?.fetchSources)
+  const diagrams = images.filter(image => image.data?.fetchBlob)
 
-    const singleFileContent = () => {
-      transformTableBySettings(tableWithParents, settings)
-
-      const markdown = Docx.stringify(root)
-
-      return new Blob([markdown])
-    }
-
-    const zipFileContent = async () => {
-      /*
-       * ======================================================================
-       * [markdown-studio 适配缝 6/6] 打包改用 zip.js 低层 API。
-       *
-       * 原来用 `new fs.FS()` + `addBlob/addText` + `exportBlob()`：exportBlob 走
-       * zip-fs 的并发导出层（bufferedWrite，所有条目并行写入），而该层把子条目的失败
-       * 原样再抛（`throw errorResult.reason`），里层还有多处「无原因」的流拆除
-       * （`abort()` / `error(reason)` / `throw cancelReason`，reason 可能是 undefined）。
-       * 结果：只要内部某一步失败，上层只能拿到一个「无原因的 undefined 拒绝」——
-       * 实测就是面板只报 undefined，既定位不到原因也修不了。
-       *
-       * 低层 API 顺序写入（一次只写一个条目）、错误原样冒泡带堆栈，且不再触发 fs 层的
-       * 临时 blob 溢写机制。zip 内容与原来一致（条目名不变，仍含 `images/` 前缀）。
-       * ======================================================================
-       */
-      const imgs = images.filter(image => image.data?.fetchSources)
-      const diagrams = images.filter(image => image.data?.fetchBlob)
-
-      const results = await Promise.all([
-        downloadFiles(imgs, {
-          batchSize: 15,
-          onProgress: progress => {
-            Toast.loading({
-              content: i18next.t(TranslationKey.DOWNLOAD_PROGRESS, {
-                name: i18next.t(TranslationKey.IMAGE),
-                progress: Math.floor(progress * OneHundred),
-              }),
-              keepAlive: true,
-              key: TranslationKey.IMAGE,
-            })
-          },
-          onComplete: () => {
-            Toast.remove(TranslationKey.IMAGE)
-          },
-          signal,
-          useUUID: settings[SettingKey.DownloadFileWithUniqueName],
-          markdownFileName: recommendName,
-        }),
-        // Diagrams must be downloaded one by one
-        downloadFiles(diagrams, {
-          batchSize: 1,
-          signal,
-          useUUID: settings[SettingKey.DownloadFileWithUniqueName],
-          markdownFileName: recommendName,
-        }),
-        downloadFiles(files, {
-          onProgress: progress => {
-            Toast.loading({
-              content: i18next.t(TranslationKey.DOWNLOAD_PROGRESS, {
-                name: i18next.t(TranslationKey.FILE),
-                progress: Math.floor(progress * OneHundred),
-              }),
-              keepAlive: true,
-              key: TranslationKey.FILE,
-            })
-          },
-          onComplete: () => {
-            Toast.remove(TranslationKey.FILE)
-          },
-          signal,
-          useUUID: settings[SettingKey.DownloadFileWithUniqueName],
-          markdownFileName: recommendName,
-        }),
-      ])
-
-      const entries = results.flat(1)
-
-      /*
-       * 输出侧不用 `BlobWriter`（它的内部临时 blob 机制在 Chrome 下输出超过约 10MiB 就失败，
-       * 且把错误吞成「无原因的 undefined 拒绝」；zip.js 2.22.0 实测，Node 下不复现）。
-       * 改用普通 WritableStream 收分片、最后自己拼 Blob：实测 12MB 单条 / 18MB 三条均正常。
-       */
-      const zipChunks: Uint8Array[] = []
-      const zipWriter = new ZipWriter(
-        new WritableStream<Uint8Array>({
-          write(chunk) {
-            zipChunks.push(chunk)
-          }
+  const results = await Promise.all([
+    downloadFiles(imgs, {
+      batchSize: 15,
+      onProgress: progress => {
+        Toast.loading({
+          content: i18next.t(TranslationKey.DOWNLOAD_PROGRESS, {
+            name: i18next.t(TranslationKey.IMAGE),
+            progress: Math.floor(progress * OneHundred),
+          }),
+          keepAlive: true,
+          key: TranslationKey.IMAGE,
         })
-      )
+      },
+      onComplete: () => {
+        Toast.remove(TranslationKey.IMAGE)
+      },
+      signal,
+      useUUID: settings[SettingKey.DownloadFileWithUniqueName],
+      markdownFileName: recommendName,
+    }),
+    // Diagrams must be downloaded one by one
+    downloadFiles(diagrams, {
+      batchSize: 1,
+      signal,
+      useUUID: settings[SettingKey.DownloadFileWithUniqueName],
+      markdownFileName: recommendName,
+    }),
+    downloadFiles(files, {
+      onProgress: progress => {
+        Toast.loading({
+          content: i18next.t(TranslationKey.DOWNLOAD_PROGRESS, {
+            name: i18next.t(TranslationKey.FILE),
+            progress: Math.floor(progress * OneHundred),
+          }),
+          keepAlive: true,
+          key: TranslationKey.FILE,
+        })
+      },
+      onComplete: () => {
+        Toast.remove(TranslationKey.FILE)
+      },
+      signal,
+      useUUID: settings[SettingKey.DownloadFileWithUniqueName],
+      markdownFileName: recommendName,
+    }),
+  ])
 
-      for (const { filename, content } of entries) {
-        await zipWriter.add(filename, new BlobReader(content))
-      }
+  const entries = results.flat(1)
 
-      transformTableBySettings(tableWithParents, settings)
+  // 表格形态由设置决定，必须在 stringify 之前应用（与上游单文件路径一致）
+  transformTableBySettings(tableWithParents, settings)
 
-      const markdown = Docx.stringify(root)
+  const markdown = Docx.stringify(root)
 
-      await zipWriter.add(`${recommendName}.md`, new TextReader(markdown))
-      await zipWriter.close()
+  const saved = await saveClipToFolder({
+    folder: recommendName,
+    markdownName,
+    markdown,
+    assets: entries.map(entry => ({ path: entry.filename, blob: entry.content })),
+  })
 
-      return new Blob(zipChunks, { type: 'application/zip' })
-    }
-
-    const content = isZip ? await zipFileContent() : singleFileContent()
-
-    return content
-  }
-
-  if (
-    settings[SettingKey.DownloadMethod] === DownloadMethod.ShowSaveFilePicker &&
-    supported
-  ) {
-    if (!navigator.userActivation.isActive) {
-      const confirmed = await confirm()
-      if (!confirmed) {
-        throw new Error(DOWNLOAD_ABORTED)
-      }
-    }
-
-    await fileSave(toBlob(), {
-      fileName: filename,
-      extensions: [ext],
-    })
-  } else {
-    const blob = await toBlob()
-
-    legacyFileSave(blob, {
-      fileName: filename,
-    })
-  }
+  return saved
 }
 
 let controller = new AbortController()
 main({
   signal: controller.signal,
 })
-  .then(() => {
+  .then(saved => {
     Toast.success({
-      content: i18next.t(TranslationKey.DOWNLOAD_COMPLETE),
+      content: i18next.t(TranslationKey.SAVED_TO_FOLDER, { folder: saved.folder }),
     })
   })
   .catch((error: unknown) => {

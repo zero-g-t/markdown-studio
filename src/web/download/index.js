@@ -3,7 +3,8 @@
  *
  * 流程：
  *   提取正文 → 收集正文图片 → 清单勾选 → 下载勾选图片 → 把 img 改写成 assets/<名>
- *   → 转 Markdown → 有图打 zip（<标题>.md + assets/）、无图直接给 <标题>.md → 落盘
+ *   → 链接内部块级容器降级为行内 → 转 Markdown
+ *   → 写入「默认下载目录/<标题>/」（<标题>.md + assets/）→ 自动在新标签页打开 md
  *
  * 提取与转换照搬 obsidian-clipper 的「保存为 Markdown」（defuddle + turndown），
  * 图片本地化与清单勾选是本项目在它之上叠加的部分。
@@ -18,9 +19,8 @@
  *     服务器返回的错误码一律如实上报，不换通道、不重试；
  *   · 进度事件用 'image' 作 key，悬浮 UI 的圆环才会聚合出百分比。
  */
-import { BlobReader, TextReader, ZipWriter, configure } from '@zip.js/zip.js';
-import { legacyFileSave } from '@/common/legacy';
 import { requestManifestSelection } from '@/feishu/download/selection';
+import { saveClipToFolder } from '@/feishu/download/save';
 import { safeNormalizeFileName } from '@/lib/utils';
 import { MANIFEST_GROUP } from '../../feishu/protocol.js';
 import {
@@ -36,15 +36,12 @@ import {
   buildMarkdown,
   collectImages,
   flattenShadowDom,
+  normalizeLinkContent,
   parsePage,
   readContentDocument,
   serializeContent
 } from './extract.js';
 import { downloadImages, ensureExtension, probeImageSizes } from './images.js';
-
-// MAIN world 下 Worker 容易受页面 CSP 限制。飞书 bundle 里的同名 configure 不跨 bundle 生效，
-// 这里是独立注入的另一份 zip.js 实例，必须自己关一次。
-configure({ useWebWorkers: false });
 
 const ASSET_DIR = 'assets';
 const FALLBACK_TITLE = 'Untitled';
@@ -158,6 +155,7 @@ async function main() {
   });
 
   applyLocalSources(candidates, localPathByUrl);
+  normalizeLinkContent(contentDoc);
   const markdown = buildMarkdown(serializeContent(contentDoc));
 
   const baseName = safeNormalizeFileName(resolveTitle(result));
@@ -166,48 +164,12 @@ async function main() {
     ? `；${downloaded.failures.length} 张图片下载失败，已在 Markdown 中保留原链接`
     : '';
 
-  let blob;
-  let outputName;
+  postProgress([entry('save', '正在保存到本地文件夹…')]);
 
-  if (assets.length > 0) {
-    /*
-     * 打包用 zip.js 低层 API（顺序写入），不用 `new fs.FS().exportBlob()`：
-     * exportBlob 走 zip-fs 的并发导出层，子条目失败会被 `throw errorResult.reason` 原样再抛，
-     * 而里层多处流拆除是无原因调用（abort()/error(reason)），失败原因会退化成 undefined ——
-     * 上层只能看到「无原因的拒绝」（飞书分支已实测踩到）。低层顺序写不会吞掉错误，
-     * 条目名保持 `assets/<名>` 与 `<标题>.md` 不变。
-     */
-    /*
-     * 输出侧不用 `BlobWriter`：它的内部临时 blob 机制在 Chrome 下输出超过约 10MiB 就会失败，
-     * 并把错误吞成「无原因的 undefined 拒绝」（zip.js 2.22.0 实测；同一份代码在 Node 下不复现）。
-     * 改用普通 WritableStream 收分片、最后自己拼 Blob：实测 12MB 单条 / 18MB 三条均正常。
-     */
-    const zipChunks = [];
-    const zipWriter = new ZipWriter(
-      new WritableStream({
-        write(chunk) {
-          zipChunks.push(chunk);
-        }
-      })
-    );
+  // 落盘与「写完自动打开 md」都在这里完成：具体通道见 src/feishu/download/save.ts
+  await saveClipToFolder({ folder: baseName, markdownName, markdown, assets });
 
-    await zipWriter.add(markdownName, new TextReader(markdown));
-
-    for (const asset of assets) {
-      await zipWriter.add(asset.path, new BlobReader(asset.blob));
-    }
-
-    await zipWriter.close();
-    blob = new Blob(zipChunks, { type: 'application/zip' });
-    outputName = `${baseName}.zip`;
-  } else {
-    blob = new Blob([markdown], { type: 'text/markdown;charset=utf-8' });
-    outputName = markdownName;
-  }
-
-  legacyFileSave(blob, { fileName: outputName });
-
-  const message = `已下载 ${outputName}${assets.length > 0 ? `（含 ${assets.length} 张图片）` : ''}${failureNote}`;
+  const message = `已保存到「下载目录/${baseName}/」并已在浏览器打开${assets.length > 0 ? `（含 ${assets.length} 张图片）` : ''}${failureNote}`;
   const finalEntries = [entry('done', message, { level: 'success' })];
 
   downloaded.failures.forEach((failure) => {

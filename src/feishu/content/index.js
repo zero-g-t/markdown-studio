@@ -18,6 +18,8 @@ import {
   FEISHU_EVENT,
   POST_MESSAGE_FLAG,
   RUNTIME_MESSAGE_FETCH_IMAGE,
+  RUNTIME_MESSAGE_OPEN_CLIP,
+  RUNTIME_MESSAGE_SAVE_CLIP_FILE,
   RUNTIME_MESSAGE_SITE_DOWNLOAD
 } from '../protocol.js';
 import { DEFAULT_THEME_COLOR, resolveThemeColor } from '../../shared/theme-colors.js';
@@ -243,6 +245,10 @@ class ProviderController {
       case FEISHU_EVENT.FETCH_IMAGE:
         this.relayImageFetch(data);
         break;
+      case FEISHU_EVENT.SAVE:
+      case FEISHU_EVENT.SAVE_FINISH:
+        this.relaySave(data);
+        break;
       case FEISHU_EVENT.DONE:
         if (!this.activeRun) {
           return;
@@ -302,6 +308,46 @@ class ProviderController {
         }
 
         reply({ ok: false, error: response?.error || '扩展抓取失败' });
+      })
+      .catch((error) => {
+        reply({ ok: false, error: error?.message || String(error) });
+      });
+  }
+
+  /*
+   * 落盘中继：MAIN world 没有 chrome.*，「在下载目录下建 <标题>/ 子文件夹」只能由
+   * Service Worker 用 chrome.downloads 完成，字节（base64）经这里转发。
+   *
+   * 收口与跨域代抓同一思路：只认「本轮运行」这一个窗口 —— postMessage 区分不了
+   * 「转换器发的」与「页面伪造的」，窗口之外一律拒绝，避免把扩展当成任意写盘工具。
+   */
+  relaySave({ event, requestId, folder, path, mime, base64, downloadId }) {
+    const reply = (result) => {
+      window.postMessage(
+        { [POST_MESSAGE_FLAG]: true, event: FEISHU_EVENT.SAVE_RESULT, requestId, ...result },
+        '*'
+      );
+    };
+
+    if (!this.activeRun) {
+      reply({ ok: false, error: '当前不在下载流程中，已拒绝写入本地文件' });
+      return;
+    }
+
+    const message =
+      event === FEISHU_EVENT.SAVE_FINISH
+        ? { type: RUNTIME_MESSAGE_OPEN_CLIP, folder, path, downloadId }
+        : { type: RUNTIME_MESSAGE_SAVE_CLIP_FILE, folder, path, mime, base64 };
+
+    chrome.runtime
+      .sendMessage(message)
+      .then((response) => {
+        if (response?.ok) {
+          reply({ ok: true, filename: response.filename, downloadId: response.downloadId });
+          return;
+        }
+
+        reply({ ok: false, error: response?.error || '写入本地文件失败' });
       })
       .catch((error) => {
         reply({ ok: false, error: error?.message || String(error) });

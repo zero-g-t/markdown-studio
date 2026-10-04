@@ -15,7 +15,7 @@
     "http://*/*",
     "https://*/*"
   ],
-  "permissions": ["storage", "scripting"],
+  "permissions": ["storage", "scripting", "downloads", "offscreen"],
   "content_scripts": [
     {
       "matches": ["file:///*"],

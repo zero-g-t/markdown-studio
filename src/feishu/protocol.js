@@ -22,6 +22,20 @@ export const RUNTIME_MESSAGE_SITE_DOWNLOAD = 'MD_STUDIO_SITE_DOWNLOAD';
  */
 export const RUNTIME_MESSAGE_FETCH_IMAGE = 'MD_STUDIO_FETCH_IMAGE';
 
+/*
+ * 悬浮 UI → Service Worker：把提取结果写入「默认下载目录/<文件夹>/」。
+ *
+ * 转换器（MAIN world）没有 chrome.*，而「在下载目录下建子文件夹」只能由 chrome.downloads 完成
+ * （<a download> 会被浏览器抹掉路径分隔符），所以字节要经悬浮 UI 转给 Service Worker。
+ * 一个文件一条消息：既避开单条消息的体积上限，也让每个文件的成败都能单独如实上报。
+ *
+ * 同样在 public/background.js 有同名字符串副本，两边必须保持一致。
+ */
+export const RUNTIME_MESSAGE_SAVE_CLIP_FILE = 'MD_STUDIO_SAVE_CLIP_FILE';
+
+// 悬浮 UI → Service Worker：在新标签页打开刚写入的 Markdown（file:// 交给 open-md-file.js 接管）
+export const RUNTIME_MESSAGE_OPEN_CLIP = 'MD_STUDIO_OPEN_CLIP';
+
 // 转换器 → 悬浮 UI：window.postMessage 载荷上的标记，避免与页面自身消息混淆
 export const POST_MESSAGE_FLAG = '__mdStudioFeishu';
 
@@ -39,7 +53,18 @@ export const FEISHU_EVENT = {
   // 跨域图片代抓请求（MAIN → ISOLATED）：载荷 { requestId, url }
   FETCH_IMAGE: 'fetch-image',
   // 跨域图片代抓结果（ISOLATED → MAIN）：载荷 { requestId, ok, base64?, contentType?, error? }
-  FETCH_IMAGE_RESULT: 'fetch-image-result'
+  FETCH_IMAGE_RESULT: 'fetch-image-result',
+  /*
+   * 落盘请求（MAIN → ISOLATED）：载荷 { requestId, folder, path, mime, base64 }
+   *   folder = 顶层文件夹名（不含路径分隔符）
+   *   path   = 相对该文件夹的路径，形如 `assets/x.png` 或 `<标题>.md`
+   * 一个文件一条消息，写完一个再发下一个。
+   */
+  SAVE: 'save',
+  // 落盘收尾（MAIN → ISOLATED）：载荷 { requestId, folder, path, downloadId }，把 md 在新标签页打开
+  SAVE_FINISH: 'save-finish',
+  // 落盘结果（ISOLATED → MAIN）：载荷 { requestId, ok, error?, filename?, downloadId? }
+  SAVE_RESULT: 'save-result'
 };
 
 /*
