@@ -19,6 +19,10 @@
  *
  *   3. 转换前把链接内部的容器型块级元素降级为行内 span（见 normalizeLinkContent），
  *      否则 turndown 的块级换行会落进链接文本，产出 `[\n\n标题\n\n](url)` 这种坏链接。
+ *
+ *   4. 记录页面「实际渲染出来的图片宽度」，把被缩小显示过的图写成 HTML <img width>（见
+ *      collectRenderedImageSizes / stageSizedImages）。落盘的是原图，页面上很多图是缩略显示
+ *      （豆包消息里的参考图就是典型），只写 `![](assets/…)` 的话预览会按自然尺寸渲染成巨型图。
  */
 import Defuddle, { createMarkdownContent } from 'defuddle/full';
 import { safeNormalizeFileName } from '@/lib/utils';
@@ -125,14 +129,61 @@ function urlBaseName(url, index) {
 }
 
 /**
+ * 记录页面上每张图「实际渲染出来的宽度」（CSS px，按绝对 URL 建索引）。
+ *
+ * 落盘的是原图，而页面上不少图是缩小显示的（消息里的参考图、列表封面等），
+ * 只写 `![](assets/…)` 的话预览会按图片自然尺寸渲染，看上去「超级大」。
+ *
+ * 只记录确实被缩小显示的图，其余不记（保持纯 Markdown 图片语法）：
+ *   · naturalWidth 为 0 的图（还没加载完 / 懒加载占位）不记 —— 它的盒子尺寸没有参考价值；
+ *   · 显示宽度不小于自然宽度的图不记 —— 它本来就和网页上一样大。
+ * 宁可给不出宽度，也不给一个错的。
+ */
+export function collectRenderedImageSizes(root = document) {
+  const widths = new Map();
+
+  root.querySelectorAll('img').forEach((img) => {
+    const raw = getBestImageSrc(img).trim();
+
+    if (!raw || raw.startsWith('data:') || img.naturalWidth <= 0) {
+      return;
+    }
+
+    const width = Math.round(img.getBoundingClientRect().width);
+
+    if (width < 1 || img.naturalWidth - width < 2) {
+      return;
+    }
+
+    let absoluteUrl;
+
+    try {
+      absoluteUrl = new URL(raw, document.baseURI).href;
+    } catch {
+      return;
+    }
+
+    // 同一张图在页面上可能显示多次（缩略图 + 大图）：Markdown 里同一路径只能有一个宽度，
+    // 取显示得最大的那次，更接近正文里看到的大小。
+    if (width > (widths.get(absoluteUrl) || 0)) {
+      widths.set(absoluteUrl, width);
+    }
+  });
+
+  return widths;
+}
+
+/**
  * 收集正文里的图片（按出现顺序、按绝对 URL 去重）。
  *
  * 跳过 data: 内联图（不下载，也不改写）；取不到可用 src 的 img 直接忽略 ——
  * 它们本来也不会出现在 Markdown 里。
  *
- * @returns {Array<{ url: string, baseName: string, nodes: HTMLImageElement[] }>}
+ * @param {Document} contentDoc 净化后的正文文档
+ * @param {Map<string, number>} renderedWidths collectRenderedImageSizes 的结果（绝对 URL → 显示宽度）
+ * @returns {Array<{ url: string, baseName: string, nodes: HTMLImageElement[], renderedWidth: number|null }>}
  */
-export function collectImages(contentDoc) {
+export function collectImages(contentDoc, renderedWidths = new Map()) {
   const byUrl = new Map();
 
   contentDoc.body.querySelectorAll('img').forEach((img) => {
@@ -160,7 +211,8 @@ export function collectImages(contentDoc) {
     byUrl.set(absoluteUrl, {
       url: absoluteUrl,
       baseName: urlBaseName(absoluteUrl, byUrl.size),
-      nodes: [img]
+      nodes: [img],
+      renderedWidth: renderedWidths.get(absoluteUrl) ?? null
     });
   });
 
@@ -185,6 +237,70 @@ export function applyLocalSources(candidates, localPathByUrl) {
       img.setAttribute('src', localPath);
     });
   });
+}
+
+/*
+ * Markdown 图片语法（`![alt](path)`）表达不了尺寸，而本项目的编辑器预览用
+ * markdown-it({ html: true }) 渲染、原样放行 HTML，所以「页面上被缩小显示过的图」
+ * 改写成 HTML <img>。
+ *
+ * 做法是占位符：序列化前把 img 节点换成私有区字符占位，转完 Markdown 再把占位还原成标签，
+ * 而不是去正则匹配/改写 `![alt](assets/…)` —— 文件名里的括号、空格、逗号都会被 Markdown
+ * 的转义规则改写（defuddle 会把 `(` 转义成 `\(`、含空格的路径包进 `<>`），按字符串找回去很容易漏。
+ *
+ * 只给 width、不给 height：高度交给浏览器按图片自身比例算，避免页面用 CSS 裁剪过这张图时
+ * 把落盘的图拉伸变形；宽度一致就已经是「和网页上看到的一样大」。
+ */
+const IMAGE_PLACEHOLDER_PREFIX = '\uE000';
+const IMAGE_PLACEHOLDER_SUFFIX = '\uE001';
+
+const escapeAttribute = (value) =>
+  value
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+
+/**
+ * 把「已本地化 + 页面缩小显示过」的图换成占位符。
+ *
+ * @param {Document} contentDoc 已改写 src 的正文文档
+ * @param {Map<string, number>} widthByLocalPath 包内路径（assets/<名>）→ 页面显示宽度
+ * @returns {Map<string, string>} 占位符 → HTML <img> 标签
+ */
+export function stageSizedImages(contentDoc, widthByLocalPath) {
+  const htmlByPlaceholder = new Map();
+
+  contentDoc.body.querySelectorAll('img').forEach((img) => {
+    const src = img.getAttribute('src') || '';
+    const width = widthByLocalPath.get(src);
+
+    if (!width) {
+      return;
+    }
+
+    const placeholder = `${IMAGE_PLACEHOLDER_PREFIX}${htmlByPlaceholder.size}${IMAGE_PLACEHOLDER_SUFFIX}`;
+    const alt = img.getAttribute('alt') || '';
+
+    htmlByPlaceholder.set(
+      placeholder,
+      `<img src="${escapeAttribute(src)}" alt="${escapeAttribute(alt)}" width="${width}">`
+    );
+    img.parentNode.replaceChild(contentDoc.createTextNode(placeholder), img);
+  });
+
+  return htmlByPlaceholder;
+}
+
+/** 把占位符还原成 HTML <img> 标签（必须在 Markdown 转换之后调用） */
+export function restoreSizedImages(markdown, htmlByPlaceholder) {
+  let result = markdown;
+
+  htmlByPlaceholder.forEach((tag, placeholder) => {
+    result = result.replaceAll(placeholder, tag);
+  });
+
+  return result;
 }
 
 /*

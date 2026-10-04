@@ -2,8 +2,9 @@
  * 通用网页分支的 MAIN world 入口（与飞书分支 src/feishu/download/index.js 并列）。
  *
  * 流程：
- *   提取正文 → 收集正文图片 → 清单勾选 → 下载勾选图片 → 把 img 改写成 assets/<名>
- *   → 链接内部块级容器降级为行内 → 转 Markdown
+ *   提取正文 → 收集正文图片（记下页面上实际渲染的宽度）→ 清单勾选 → 下载勾选图片
+ *   → 把 img 改写成 assets/<名> → 链接内部块级容器降级为行内
+ *   → 页面缩小显示过的图写成 HTML <img width>，其余照旧 → 转 Markdown
  *   → 写入「默认下载目录/<标题>/」（<标题>.md + assets/）→ 自动在新标签页打开 md
  *
  * 提取与转换照搬 obsidian-clipper 的「保存为 Markdown」（defuddle + turndown），
@@ -35,13 +36,17 @@ import {
   applyLocalSources,
   buildMarkdown,
   collectImages,
+  collectRenderedImageSizes,
   flattenShadowDom,
   normalizeLinkContent,
   parsePage,
   readContentDocument,
-  serializeContent
+  restoreSizedImages,
+  serializeContent,
+  stageSizedImages
 } from './extract.js';
 import { downloadImages, ensureExtension, probeImageSizes } from './images.js';
+import { collectDeclaredSiteNames, pickPageTitle } from './title.js';
 
 const ASSET_DIR = 'assets';
 const FALLBACK_TITLE = 'Untitled';
@@ -74,14 +79,26 @@ class UniqueFileName {
   }
 }
 
+/*
+ * 落盘标题：优先 defuddle 的 result.title，但它对应的 og:title 在部分站点被写成了站点名
+ * （实测 chat.deepseek.com、www.doubao.com），那种情况下退回页签标题 —— 判定依据见 ./title.js。
+ */
 function resolveTitle(result) {
-  return (result.title || document.title || FALLBACK_TITLE).trim() || FALLBACK_TITLE;
+  return pickPageTitle({
+    parsedTitle: result.title,
+    documentTitle: document.title,
+    declaredSiteNames: collectDeclaredSiteNames(document),
+    hostname: location.hostname,
+    fallback: FALLBACK_TITLE
+  });
 }
 
 async function main() {
   postProgress([entry('extract', '正在提取网页正文…')]);
 
   flattenShadowDom(document);
+  // 必须在 parsePage 之前取：尺寸来自页面真实布局，只对仍在文档里的 img 有效
+  const renderedImageWidths = collectRenderedImageSizes(document);
   const result = parsePage(document);
 
   if (!result.content) {
@@ -89,7 +106,7 @@ async function main() {
   }
 
   const contentDoc = readContentDocument(result.content);
-  const candidates = collectImages(contentDoc);
+  const candidates = collectImages(contentDoc, renderedImageWidths);
 
   // 清单：只在确实抓到图片时才让用户勾选；没有图片就直接进转换
   let selectedIds = null;
@@ -136,6 +153,7 @@ async function main() {
   // 只有「勾选了 + 下载成功」的图片才本地化；其余（没勾选 / 下载失败）保持远程链接
   const uniqueName = new UniqueFileName();
   const localPathByUrl = new Map();
+  const widthByLocalPath = new Map();
   const assets = [];
 
   picked.forEach((item) => {
@@ -152,11 +170,17 @@ async function main() {
 
     localPathByUrl.set(item.candidate.url, path);
     assets.push({ path, blob: success.blob });
+
+    // 页面上是缩小显示的图：把显示宽度带进 Markdown（见 extract.js stageSizedImages）
+    if (item.candidate.renderedWidth) {
+      widthByLocalPath.set(path, item.candidate.renderedWidth);
+    }
   });
 
   applyLocalSources(candidates, localPathByUrl);
   normalizeLinkContent(contentDoc);
-  const markdown = buildMarkdown(serializeContent(contentDoc));
+  const sizedImages = stageSizedImages(contentDoc, widthByLocalPath);
+  const markdown = restoreSizedImages(buildMarkdown(serializeContent(contentDoc)), sizedImages);
 
   const baseName = safeNormalizeFileName(resolveTitle(result));
   const markdownName = `${baseName}.md`;
