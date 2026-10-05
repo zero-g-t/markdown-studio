@@ -27,10 +27,26 @@ export const ICON_MANIFEST = `<svg width="18" height="18" viewBox="0 0 16 16" fi
   <path d="M2 4.75A.75.75 0 0 1 2.75 4h10.5a.75.75 0 0 1 0 1.5H2.75A.75.75 0 0 1 2 4.75Zm0 4A.75.75 0 0 1 2.75 8h10.5a.75.75 0 0 1 0 1.5H2.75A.75.75 0 0 1 2 8.75Zm0 4A.75.75 0 0 1 2.75 12h7.5a.75.75 0 0 1 0 1.5h-7.5A.75.75 0 0 1 2 12.75Z"></path>
 </svg>`;
 
+/*
+ * 面板标题左侧的产品图标，内联成 data URI。
+ *
+ * 为什么不写 chrome.runtime.getURL('icons/icon32.png')：这个悬浮 UI 长在第三方页面里，
+ * <img> 拉 chrome-extension:// 资源属于「页面发起的请求」，会被站点自己的 CSP（img-src）
+ * 挡掉；data URI 不经过网络、不依赖 web_accessible_resources，是最省事且各站点一致的做法。
+ *
+ * 内容是扩展图标（public/icons/）的 20px 版本，由 scripts/generate-icons.ps1 生成：
+ *   powershell -File scripts/generate-icons.ps1 -Source <源图> -OutDir <dir> -Sizes 20
+ */
+export const ICON_LOGO = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABQAAAAUCAYAAACNiR0NAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAOoSURBVDhPjVXNTxVXFB9BBWwRxvfgCbQqPFDjwibPj6SNkproxnTZxD/C6MLEjcZtE+3GdlG6KQs+pKgYxaZo2i500aoPHvJRNSgaxK80Myofzsy98/HznDPzEG00nuTm3nvuOb/7Ox93xtBK342iyKLZCoPA8rVvRckc+L6lPM8KtKZZiS7e+7Qmezr3XFf2jEH7ewY5zeJ9Er0zh8XFO5LoPceZY0ArCkPQLQiDEC9fzuDuxD08nJomoBDK9UDMZGYbtn00/Rh3bk/gxfMXovOVZlOy07bhOq4ll5Dh0yfP8EWuFdXpRlSlGtF/cSC52SUnJetLl/6UM7bZTLZPHj8VIiyu49gGGVLOYsW1f/JYVlGLSnMNSstrsO3L3XBeOeQQCBOtNbZ/tQelZWmxKa+sR/7GkPguYuhYiOIcDBdGsXLVWpg1jUhlmmEsNfFT2y9yxtL2czuMUhPpTBYmMTRrshi5OZacSiS2wVXjvLAMDt5ElQA2CfAnVZ+haX0O83PzmJ2ZRVNLjnQNcsYhm7VZDA+Pii8XTitlG9wqRYb5fEEA06tbkF2/RRyNpatw/MQPOPH9j8KumvLXvGGrsDNrmonhuPgyIJGLGcYaoFAYIcB1qKhswMmTbVSgnVixsgGZho3I1G+QNReNz8o/rYeZacHY2K3Em4tCIRPNhaLk88NUwXVYsjyNgYE/0N19RlhJvmgw246OX3H58l+yNmubhQRLRL0oReFOXygK5YMBSwjw9OnzotuyfRexqZOR2/o1eUY4c/ZCApjF6EgSMokUZXHbxAwbUVJWK0xYLvT/jiXLUjL6+vpF19HZK/tqKl5hqMiQi8IMubEThnEO10rInV29omNp3fUNdrTuTXbAqVOUCma4uG0IgqKlHP6vbSiHdHtPT5/o+DIOa5ySH1CDs5zr7YFhlMGsXo2Jf9/kUNpGUQ55wzI0FPdhyfIUOiksFn7DRfHo+R3rd5A7Ognz2/NI7fsNO757hit3XLmYbN8G5D5cQS1jlFShvb1LdNpTCyMMFG7cd7HmiIeKQ0DpQWB/9zxe0aWctYU+LIb84P4U6j7fJCFfvfq36BYD8iANxqdd1B2exYGuGdq79M5JzwwFkNuGzeQTFEmjXr82SOuQ+4qMVPz5YsBkz6BT/3lUBA+hr7gYb4rywQ/sx0icLZHAD+YMrdUkvWc7DHzb18pWnmtr5dl8WxBoW9E68LXtUTg8c1g+z2xDtnJGtvQLsD3HmXwN9hL7sG/QiZsAAAAASUVORK5CYII=';
+
 export const FLOATING_UI_MARKUP = `
 <div class="panel" hidden>
   <div class="panel-head">
-    <span class="panel-title">文档 → Markdown</span>
+    <span class="panel-title">
+      <img class="panel-logo" src="${ICON_LOGO}" alt="" aria-hidden="true">
+      <span class="panel-name">Markdown Studio</span>
+      <span class="panel-sub">下载为MD格式</span>
+    </span>
     <button class="panel-close" type="button" aria-label="收起">×</button>
   </div>
   <ul class="panel-list"></ul>
@@ -67,7 +83,7 @@ export const FLOATING_UI_MARKUP = `
 /*
  * 苹果风格（macOS 系统 UI 观感）：
  *   · 字体走 SF Pro / 苹方，-webkit-font-smoothing 抗锯齿；
- *   · 字号层级明确：面板标题 15 > 分组头 13 = 列表项 13 > 辅助信息 12；
+ *   · 字号层级明确：面板标题 15 > 分组头 13 = 列表项 13 > 辅助信息 12 > 标题副文案 11；
  *   · 界面主体中性白 + 细分隔线，主题色只用于强调（按钮 / 复选框 / 标题 / 进度）；
  *   · 面板半透明毛玻璃 + 大圆角 + 柔和多层阴影。
  */
@@ -222,10 +238,33 @@ export const FLOATING_UI_STYLES = `
 }
 
 .panel-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.panel-logo {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
+}
+
+.panel-name {
   font-size: 15px;
   font-weight: 600;
   letter-spacing: -0.01em;
   color: var(--md-strong);
+  white-space: nowrap;
+}
+
+/* 功能副标题：与产品名同行，字号低一级以示从属 */
+.panel-sub {
+  font-size: 11px;
+  font-weight: 400;
+  color: #86868b;
+  white-space: nowrap;
 }
 
 .panel-close {
