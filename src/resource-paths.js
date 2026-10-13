@@ -1,6 +1,6 @@
 const ABSOLUTE_URL_PATTERN = /^[a-zA-Z][a-zA-Z\d+.-]*:/;
 
-function isLocalResourcePath(resourcePath) {
+export function isLocalResourcePath(resourcePath) {
   const value = String(resourcePath || '').trim();
   return Boolean(value) &&
     !ABSOLUTE_URL_PATTERN.test(value) &&

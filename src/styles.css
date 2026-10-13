@@ -576,11 +576,138 @@ svg {
 }
 
 .editor-pane {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
   border-right: 1px solid var(--border);
 }
 
 .editor-host {
+  min-height: 0;
   height: 100%;
+}
+
+.format-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-subtle);
+}
+
+.format-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #3c4149;
+  cursor: pointer;
+}
+
+.format-button:hover {
+  background: var(--surface-muted);
+  color: var(--accent-strong);
+}
+
+.format-button:active {
+  background: var(--accent-soft);
+}
+
+.format-button svg {
+  width: 16px;
+  height: 16px;
+}
+
+.format-separator {
+  width: 1px;
+  height: 18px;
+  margin: 0 4px;
+  background: var(--border);
+}
+
+.format-select {
+  height: 28px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: #3c4149;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.format-select:hover {
+  border-color: var(--border-strong);
+}
+
+.format-color-wrap {
+  position: relative;
+}
+
+.format-color-popover {
+  position: absolute;
+  top: 32px;
+  left: 0;
+  z-index: 30;
+  display: grid;
+  grid-template-columns: repeat(5, 22px);
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.format-color-popover[hidden] {
+  display: none;
+}
+
+.format-color-swatch {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 5px;
+  background: var(--swatch);
+  cursor: pointer;
+}
+
+.format-color-swatch:hover {
+  transform: scale(1.08);
+}
+
+.format-color-custom {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  overflow: hidden;
+  border: 1px dashed var(--border-strong);
+  border-radius: 5px;
+  background: var(--surface);
+  cursor: pointer;
+}
+
+.format-color-custom input {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.editor-preview.drop-active {
+  outline: 2px dashed var(--accent);
+  outline-offset: -6px;
+  background: var(--accent-soft);
 }
 
 .cm-editor {
@@ -795,7 +922,19 @@ svg {
 }
 
 .markdown-body a {
-  color: var(--accent-strong);
+  color: #0969da;
+  text-decoration: none;
+}
+
+.markdown-body a:hover {
+  color: #0550ae;
+  text-decoration: underline;
+}
+
+.markdown-body a.preview-local-link {
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 2px;
 }
 
 .preview-heading-flash {

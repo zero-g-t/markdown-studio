@@ -3,7 +3,11 @@ import MarkdownIt from 'markdown-it';
 import markdownItTaskLists from 'markdown-it-task-lists';
 import mermaid from 'mermaid';
 import { extractOutlineItems, inlineTokensToText, slugifyHeadingText } from './outline.js';
-import { resolveFileResourceUrl, resolveWorkspaceResourcePath } from './resource-paths.js';
+import {
+  isLocalResourcePath,
+  resolveFileResourceUrl,
+  resolveWorkspaceResourcePath
+} from './resource-paths.js';
 import { THEME_COLORS, resolveThemeSurfaces } from './shared/theme-colors.js';
 import { basicSetup, EditorView } from 'codemirror';
 import { markdown } from '@codemirror/lang-markdown';
@@ -11,8 +15,10 @@ import { EditorState, StateEffect, StateField } from '@codemirror/state';
 import { Decoration, keymap } from '@codemirror/view';
 import { indentWithTab } from '@codemirror/commands';
 import {
+  Bold,
   ChevronDown,
   ChevronRight,
+  Code,
   Columns2,
   Copy,
   Dot,
@@ -22,16 +28,28 @@ import {
   Folder,
   FolderOpen,
   FolderPlus,
+  Image,
+  Italic,
+  Link,
+  List,
+  ListOrdered,
+  ListTodo,
   Minus,
+  Palette,
   PanelLeftClose,
   PanelLeftOpen,
   PanelRightClose,
   Pencil,
   Plus,
+  Quote,
   RefreshCw,
   Save,
   Settings,
+  SquareCode,
+  Strikethrough,
+  Table,
   Trash2,
+  Workflow,
   X,
   createIcons
 } from 'lucide';
@@ -45,8 +63,10 @@ const MIN_REFRESH_INTERVAL_SECONDS = 1;
 const MAX_REFRESH_INTERVAL_SECONDS = 60;
 const EMPTY_DOCUMENT = '# Untitled\n\nStart writing Markdown here.\n';
 const studioIcons = {
+  Bold,
   ChevronDown,
   ChevronRight,
+  Code,
   Columns2,
   Copy,
   Dot,
@@ -56,16 +76,28 @@ const studioIcons = {
   Folder,
   FolderOpen,
   FolderPlus,
+  Image,
+  Italic,
+  Link,
+  List,
+  ListOrdered,
+  ListTodo,
   Minus,
+  Palette,
   PanelLeftClose,
   PanelLeftOpen,
   PanelRightClose,
   Pencil,
   Plus,
+  Quote,
   RefreshCw,
   Save,
   Settings,
+  SquareCode,
+  Strikethrough,
+  Table,
   Trash2,
+  Workflow,
   X
 };
 
@@ -156,6 +188,75 @@ function normalizeFileName(name) {
 
 function renderIcons() {
   createIcons({ icons: studioIcons });
+}
+
+// 编辑栏快捷插入用的 Markdown 片段（表格 / 流程图 / 代码块）
+const MARKDOWN_TEMPLATES = {
+  table: '| 列1 | 列2 | 列3 |\n| --- | --- | --- |\n| 内容 | 内容 | 内容 |',
+  mermaid: '```mermaid\nflowchart TD\n    A[开始] --> B[结束]\n```',
+  codeBlock: '```\n\n```'
+};
+
+// 行首标记：标题按从长到短匹配，避免井号误命中
+const HEADING_PREFIXES = ['###### ', '##### ', '#### ', '### ', '## ', '# '];
+// 列表 / 任务 / 引用行首标记，切换类型时互相替换
+const LIST_LINE_PREFIXES = ['- [ ] ', '- [x] ', '- ', '* ', '+ ', '1. ', '> '];
+
+const FONT_COLOR_PRESETS = [
+  { color: '#e11d48', label: '红色' },
+  { color: '#ea580c', label: '橙色' },
+  { color: '#d97706', label: '琥珀色' },
+  { color: '#16a34a', label: '绿色' },
+  { color: '#0d9488', label: '青色' },
+  { color: '#2563eb', label: '蓝色' },
+  { color: '#7c3aed', label: '紫色' },
+  { color: '#6b7280', label: '灰色' }
+];
+
+function sanitizeFileName(name) {
+  const value = String(name || '');
+  const base = value.slice(value.lastIndexOf('/') + 1);
+  let cleaned = '';
+  for (const char of base) {
+    const code = char.charCodeAt(0);
+    const isReserved = code < 32 || code === 34 || '<>:|?*'.includes(char);
+    cleaned += isReserved ? '_' : char;
+  }
+  return cleaned.trim() || 'attachment';
+}
+
+function stripFileExtension(name) {
+  const value = String(name || '');
+  const dot = value.lastIndexOf('.');
+  return dot > 0 ? value.slice(0, dot) : value;
+}
+
+// Markdown 链接目标：保留可读的原文件名（含中文），只转义会破坏链接语法的字符。
+// 预览解析时会先 decodeURIComponent，因此这里转义过的字符仍能还原成磁盘上的真实文件名。
+function toMarkdownLinkTarget(path) {
+  return String(path || '')
+    .split('/')
+    .map((part) => part
+      .replaceAll('%', '%25')
+      .replaceAll(' ', '%20')
+      .replaceAll('(', '%28')
+      .replaceAll(')', '%29')
+      .replaceAll('#', '%23')
+      .replaceAll('?', '%3F'))
+    .join('/');
+}
+
+function isImageFile(file) {
+  return Boolean(file && file.type && file.type.startsWith('image/'));
+}
+
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(reader.error || new Error('读取文件失败'));
+    reader.readAsDataURL(file);
+  });
 }
 
 function getStorageArea() {
@@ -489,6 +590,58 @@ class FileSystemModule {
     await writable.close();
   }
 
+  async getDirectoryByParts(parts) {
+    if (!this.rootHandle) {
+      return null;
+    }
+    let directoryHandle = this.rootHandle;
+    for (const part of parts || []) {
+      directoryHandle = await directoryHandle.getDirectoryHandle(part);
+    }
+    return directoryHandle;
+  }
+
+  async fileExists(directoryHandle, name) {
+    try {
+      await directoryHandle.getFileHandle(name);
+      return true;
+    } catch (error) {
+      if (error.name === 'NotFoundError') {
+        return false;
+      }
+      throw error;
+    }
+  }
+
+  async uniqueAttachmentName(directoryHandle, name) {
+    const dot = name.lastIndexOf('.');
+    const base = dot > 0 ? name.slice(0, dot) : name;
+    const extension = dot > 0 ? name.slice(dot) : '';
+    let candidate = name;
+    let counter = 1;
+    while (await this.fileExists(directoryHandle, candidate)) {
+      candidate = `${base}-${counter}${extension}`;
+      counter += 1;
+      if (counter > 1000) {
+        candidate = `${base}-${Date.now()}${extension}`;
+        break;
+      }
+    }
+    return candidate;
+  }
+
+  // 把拖入的文件写入指定目录，返回最终落盘的文件名（重名时自动加序号）
+  async saveAttachment(parts, name, blob) {
+    const directoryHandle = await this.getDirectoryByParts(parts);
+    if (!directoryHandle) {
+      throw new Error('未打开工作目录，无法保存附件');
+    }
+    const fileName = await this.uniqueAttachmentName(directoryHandle, name);
+    const handle = await directoryHandle.getFileHandle(fileName, { create: true });
+    await this.writeFile(handle, blob);
+    return fileName;
+  }
+
   async createFile(parentHandle, name) {
     const fileName = normalizeFileName(name.endsWith('.md') ? name : `${name}.md`);
     await this.assertNameAvailable(parentHandle, fileName);
@@ -673,6 +826,103 @@ class EditorCore {
       lines: this.view.state.doc.lines
     }));
   }
+
+  // 用前后缀包裹当前选区；没有选区时插入占位文字并选中，方便直接改写
+  wrapInline(prefix, suffix = prefix, placeholder = '') {
+    const view = this.view;
+    const { from, to } = view.state.selection.main;
+    const selected = view.state.sliceDoc(from, to);
+    const inner = selected || placeholder;
+    const insert = `${prefix}${inner}${suffix}`;
+    const contentFrom = from + prefix.length;
+    const contentTo = contentFrom + inner.length;
+    view.dispatch({
+      changes: { from, to, insert },
+      selection: selected
+        ? { anchor: contentTo }
+        : { anchor: contentFrom, head: contentTo },
+      scrollIntoView: true
+    });
+    view.focus();
+  }
+
+  // 给选中行统一加上行首标记；若已全部带有该标记则去掉（prefix 为空时只做去除）
+  toggleLinePrefix(prefix, options = {}) {
+    const replaceable = options.replaceable || (prefix ? [prefix] : []);
+    const view = this.view;
+    const state = view.state;
+    const { from, to } = state.selection.main;
+    const startLine = state.doc.lineAt(from).number;
+    const endLine = state.doc.lineAt(to).number;
+    const lines = [];
+    for (let number = startLine; number <= endLine; number += 1) {
+      lines.push(state.doc.line(number));
+    }
+
+    const removeOnly = !prefix;
+    const allHavePrefix = prefix ? lines.every((line) => line.text.startsWith(prefix)) : false;
+    const changes = [];
+
+    for (const line of lines) {
+      const existing = replaceable.find((item) => line.text.startsWith(item)) || '';
+      if (removeOnly) {
+        if (existing) {
+          changes.push({ from: line.from, to: line.from + existing.length, insert: '' });
+        }
+        continue;
+      }
+      if (allHavePrefix) {
+        changes.push({ from: line.from, to: line.from + prefix.length, insert: '' });
+      } else if (existing) {
+        if (existing !== prefix) {
+          changes.push({ from: line.from, to: line.from + existing.length, insert: prefix });
+        }
+      } else {
+        changes.push({ from: line.from, to: line.from, insert: prefix });
+      }
+    }
+
+    if (changes.length) {
+      view.dispatch({ changes, scrollIntoView: true });
+    }
+    view.focus();
+  }
+
+  setHeading(level) {
+    const prefix = level ? `${'#'.repeat(level)} ` : '';
+    this.toggleLinePrefix(prefix, { replaceable: HEADING_PREFIXES });
+  }
+
+  // 在当前行插入整块内容（表格 / 流程图 / 代码块），必要时补前后换行
+  insertBlock(block, options = {}) {
+    const view = this.view;
+    const state = view.state;
+    const { from, to } = state.selection.main;
+    const doc = state.doc;
+    const lineStart = doc.lineAt(from).from;
+    const lineEnd = doc.lineAt(to).to;
+    const hasLeadingContent = state.sliceDoc(lineStart, from).trim().length > 0;
+    const hasTrailingContent = state.sliceDoc(to, lineEnd).trim().length > 0;
+    let text = block;
+    let leading = 0;
+    if (hasLeadingContent) {
+      text = `\n${text}`;
+      leading = 1;
+    }
+    if (hasTrailingContent || !text.endsWith('\n')) {
+      text = `${text}\n`;
+    }
+    const base = from + leading;
+    const select = options.select;
+    const anchor = select ? base + select.from : base + block.length;
+    const head = select ? base + select.to : base + block.length;
+    view.dispatch({
+      changes: { from, to, insert: text },
+      selection: { anchor, head },
+      scrollIntoView: true
+    });
+    view.focus();
+  }
 }
 
 // ````markdown` / ````md` 围栏里的内容是「嵌套的 Markdown」，按 Markdown 渲染而不是当代码块。
@@ -705,6 +955,8 @@ class PreviewEngine {
   constructor(container, options = {}) {
     this.container = container;
     this.resolveResourceSource = options.resolveResourceSource || null;
+    this.resolveLinkTarget = options.resolveLinkTarget || null;
+    this.onOpenLink = options.onOpenLink || null;
     this.objectUrls = new Set();
     this.headingIds = new Set();
     this.renderVersion = 0;
@@ -747,8 +999,13 @@ class PreviewEngine {
       const token = tokens[idx];
       const href = token.attrGet('href') || '';
       if (!href.startsWith('#')) {
-        token.attrSet('target', '_blank');
-        token.attrSet('rel', 'noopener noreferrer');
+        // 工作区内的相对链接交给编辑器打开，其余外链仍在新标签页打开
+        if (isLocalResourcePath(href)) {
+          token.attrJoin('class', 'preview-local-link');
+        } else {
+          token.attrSet('target', '_blank');
+          token.attrSet('rel', 'noopener noreferrer');
+        }
       }
       return originalLinkOpen(tokens, idx, options, env, self);
     };
@@ -783,6 +1040,33 @@ class PreviewEngine {
       if (this.scrollToHashLink(link.getAttribute('href'))) {
         event.preventDefault();
       }
+    });
+
+    // 点击本地文件链接（同目录的 .md / .pdf / 图片等）时在工作区内打开或新标签页预览
+    this.container.addEventListener('click', (event) => {
+      const anchor = event.target?.closest?.('a[href]');
+      if (!anchor) {
+        return;
+      }
+      const href = anchor.getAttribute('href') || '';
+      if (href.startsWith('#')) {
+        return;
+      }
+      const target = this.resolveLinkTarget ? this.resolveLinkTarget(href) : null;
+      if (!target) {
+        // 本地相对链接但当前没有可用的工作区上下文，阻止默认跳转，避免导航到无效地址
+        if (isLocalResourcePath(href)) {
+          event.preventDefault();
+        }
+        return;
+      }
+      if (!this.onOpenLink) {
+        return;
+      }
+      event.preventDefault();
+      Promise.resolve(this.onOpenLink(target)).catch((error) => {
+        console.warn('Failed to open preview link', href, error);
+      });
     });
   }
 
@@ -1354,15 +1638,72 @@ class MarkdownStudioApp {
     this.renderShell();
   }
 
+  renderFormatToolbar() {
+    const pane = this.root.querySelector('.editor-pane');
+    const editorHost = this.root.querySelector('#editorHost');
+    if (!pane || !editorHost) {
+      return;
+    }
+
+    const swatches = FONT_COLOR_PRESETS.map(
+      (preset) => `<button type='button' class='format-color-swatch' data-color='${preset.color}' style='--swatch:${preset.color}' title='${preset.label}' aria-label='${preset.label}'></button>`
+    ).join('');
+
+    const toolbar = document.createElement('div');
+    toolbar.id = 'formatToolbar';
+    toolbar.className = 'format-toolbar';
+    toolbar.setAttribute('role', 'toolbar');
+    toolbar.setAttribute('aria-label', 'Markdown 快捷格式');
+    toolbar.innerHTML = `
+      <button type='button' class='format-button' data-format='bold' title='加粗'><i data-lucide='bold'></i></button>
+      <button type='button' class='format-button' data-format='italic' title='斜体'><i data-lucide='italic'></i></button>
+      <button type='button' class='format-button' data-format='strike' title='删除线'><i data-lucide='strikethrough'></i></button>
+      <button type='button' class='format-button' data-format='code' title='行内代码'><i data-lucide='code'></i></button>
+      <button type='button' class='format-button' data-format='link' title='超链接'><i data-lucide='link'></i></button>
+      <button type='button' class='format-button' data-format='image' title='图片'><i data-lucide='image'></i></button>
+      <span class='format-separator'></span>
+      <div class='format-color-wrap'>
+        <button type='button' class='format-button' id='formatColorButton' title='字体颜色' aria-haspopup='true' aria-expanded='false'><i data-lucide='palette'></i></button>
+        <div class='format-color-popover' id='formatColorPopover' hidden>
+          ${swatches}
+          <label class='format-color-custom' title='自定义颜色'><input id='formatColorInput' type='color' value='#e11d48' /></label>
+        </div>
+      </div>
+      <span class='format-separator'></span>
+      <select id='formatHeadingSelect' class='format-select' title='标题级别'>
+        <option value=''>标题</option>
+        <option value='1'>H1</option>
+        <option value='2'>H2</option>
+        <option value='3'>H3</option>
+        <option value='4'>H4</option>
+      </select>
+      <span class='format-separator'></span>
+      <button type='button' class='format-button' data-format='bullet-list' title='无序列表'><i data-lucide='list'></i></button>
+      <button type='button' class='format-button' data-format='ordered-list' title='有序列表'><i data-lucide='list-ordered'></i></button>
+      <button type='button' class='format-button' data-format='todo' title='待办事项'><i data-lucide='list-todo'></i></button>
+      <button type='button' class='format-button' data-format='quote' title='引用'><i data-lucide='quote'></i></button>
+      <span class='format-separator'></span>
+      <button type='button' class='format-button' data-format='table' title='表格'><i data-lucide='table'></i></button>
+      <button type='button' class='format-button' data-format='mermaid' title='流程图'><i data-lucide='workflow'></i></button>
+      <button type='button' class='format-button' data-format='code-block' title='代码块'><i data-lucide='square-code'></i></button>
+      <button type='button' class='format-button' data-format='hr' title='分割线'><i data-lucide='minus'></i></button>
+    `;
+
+    pane.insertBefore(toolbar, editorHost);
+  }
+
   async init() {
     const prefs = await this.preferences.load();
     this.autosave = Boolean(prefs.autosave);
     this.previewAutoRefresh = prefs.previewAutoRefresh !== false;
     this.historyCollapsed = Boolean(prefs.historyCollapsed);
     this.layout = new LayoutController(this.root.querySelector('.studio-shell'));
+    this.renderFormatToolbar();
     this.editor = new EditorCore(this.root.querySelector('#editorHost'));
     this.preview = new PreviewEngine(this.root.querySelector('#previewHost'), {
-      resolveResourceSource: (source) => this.resolvePreviewResourceSource(source)
+      resolveResourceSource: (source) => this.resolvePreviewResourceSource(source),
+      resolveLinkTarget: (href) => this.resolvePreviewLinkTarget(href),
+      onOpenLink: (target) => this.openPreviewLink(target)
     });
     this.outline = new OutlineManager(this.root.querySelector('#outlineHost'), this.editor, this.preview);
     this.scrollSync = new EditorPreviewScrollSync(this.editor, this.preview);
@@ -1652,6 +1993,9 @@ class MarkdownStudioApp {
       if (!target?.closest('#settingsPanel') && !target?.closest('#settingsButton')) {
         this.toggleSettings(false);
       }
+      if (!target?.closest('#formatColorPopover') && !target?.closest('#formatColorButton')) {
+        this.toggleColorPopover(false);
+      }
     });
     document.addEventListener('keydown', (event) => {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
@@ -1677,6 +2021,8 @@ class MarkdownStudioApp {
         this.checkExternalChanges();
       }
     });
+    this.bindFormatToolbar();
+    this.bindDropZone();
     this.setupResizeHandle('leftResizeHandle', 'leftSidebar', 180, 500, 'left');
     this.setupResizeHandle('outlineResizeHandle', 'outlinePane', 160, 500, 'right');
   }
@@ -2199,6 +2545,294 @@ class MarkdownStudioApp {
     } catch (error) {
       this.showError(error);
     }
+  }
+
+  bindFormatToolbar() {
+    this.root.querySelectorAll('[data-format]').forEach((button) => {
+      button.addEventListener('mousedown', (event) => event.preventDefault());
+      button.addEventListener('click', () => this.applyFormatAction(button.dataset.format));
+    });
+
+    const headingSelect = this.root.querySelector('#formatHeadingSelect');
+    headingSelect?.addEventListener('change', () => {
+      this.editor.setHeading(Number(headingSelect.value) || 0);
+      headingSelect.value = '';
+    });
+
+    const colorButton = this.root.querySelector('#formatColorButton');
+    colorButton?.addEventListener('click', (event) => {
+      event.stopPropagation();
+      this.toggleColorPopover();
+    });
+
+    this.root.querySelectorAll('[data-color]').forEach((swatch) => {
+      swatch.addEventListener('mousedown', (event) => event.preventDefault());
+      swatch.addEventListener('click', () => {
+        this.applyFontColor(swatch.dataset.color);
+        this.toggleColorPopover(false);
+      });
+    });
+
+    const colorInput = this.root.querySelector('#formatColorInput');
+    colorInput?.addEventListener('change', () => {
+      this.applyFontColor(colorInput.value);
+      this.toggleColorPopover(false);
+    });
+  }
+
+  toggleColorPopover(force) {
+    const popover = this.root.querySelector('#formatColorPopover');
+    const button = this.root.querySelector('#formatColorButton');
+    if (!popover || !button) {
+      return;
+    }
+    const open = typeof force === 'boolean' ? force : popover.hidden;
+    popover.hidden = !open;
+    button.setAttribute('aria-expanded', String(open));
+  }
+
+  applyFontColor(color) {
+    this.editor.wrapInline(`<span style='color:${color}'>`, '</span>', '文字');
+  }
+
+  applyFormatAction(action) {
+    const editor = this.editor;
+    switch (action) {
+      case 'bold':
+        editor.wrapInline('**', '**', '加粗文本');
+        break;
+      case 'italic':
+        editor.wrapInline('*', '*', '斜体文本');
+        break;
+      case 'strike':
+        editor.wrapInline('~~', '~~', '删除线文本');
+        break;
+      case 'code':
+        editor.wrapInline('`', '`', 'code');
+        break;
+      case 'link':
+        editor.wrapInline('[', '](https://)', '链接文字');
+        break;
+      case 'image':
+        editor.wrapInline('![', '](image.png)', '图片描述');
+        break;
+      case 'bullet-list':
+        editor.toggleLinePrefix('- ', { replaceable: LIST_LINE_PREFIXES });
+        break;
+      case 'ordered-list':
+        editor.toggleLinePrefix('1. ', { replaceable: LIST_LINE_PREFIXES });
+        break;
+      case 'todo':
+        editor.toggleLinePrefix('- [ ] ', { replaceable: LIST_LINE_PREFIXES });
+        break;
+      case 'quote':
+        editor.toggleLinePrefix('> ', { replaceable: LIST_LINE_PREFIXES });
+        break;
+      case 'table':
+        editor.insertBlock(MARKDOWN_TEMPLATES.table);
+        break;
+      case 'mermaid':
+        editor.insertBlock(MARKDOWN_TEMPLATES.mermaid);
+        break;
+      case 'code-block':
+        editor.insertBlock(MARKDOWN_TEMPLATES.codeBlock, { select: { from: 4, to: 4 } });
+        break;
+      case 'hr':
+        editor.insertBlock('---');
+        break;
+      default:
+        break;
+    }
+  }
+
+  bindDropZone() {
+    const zone = this.root.querySelector('.editor-preview');
+    if (!zone) {
+      return;
+    }
+
+    const isFileDrag = (event) => Array.from(event.dataTransfer?.types || []).includes('Files');
+
+    zone.addEventListener('dragenter', (event) => {
+      if (!isFileDrag(event)) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      zone.classList.add('drop-active');
+    }, true);
+
+    zone.addEventListener('dragover', (event) => {
+      if (!isFileDrag(event)) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.dataTransfer) {
+        event.dataTransfer.dropEffect = 'copy';
+      }
+    }, true);
+
+    zone.addEventListener('dragleave', (event) => {
+      if (!zone.contains(event.relatedTarget)) {
+        zone.classList.remove('drop-active');
+      }
+    }, true);
+
+    zone.addEventListener('drop', (event) => {
+      if (!isFileDrag(event)) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      zone.classList.remove('drop-active');
+      const files = Array.from(event.dataTransfer?.files || []);
+      if (files.length) {
+        this.attachDroppedFiles(files).catch((error) => this.showError(error));
+      }
+    }, true);
+  }
+
+  // 把拖入的图片 / 文件落盘到当前 Markdown 同级目录，并插入对应的 Markdown 引用
+  async attachDroppedFiles(files) {
+    const canWrite = Boolean(this.fs.rootHandle && this.currentFile);
+    const dirParts = this.currentFile
+      ? this.currentFile.path.split('/').filter(Boolean).slice(0, -1)
+      : null;
+    const snippets = [];
+
+    for (const file of files) {
+      const isImage = isImageFile(file);
+      const safeName = sanitizeFileName(file.name || (isImage ? 'image.png' : 'attachment'));
+
+      if (canWrite) {
+        const existsInDir = !isImage && await this.fileExistsInDir(dirParts, safeName);
+        const targetName = existsInDir
+          ? safeName
+          : await this.fs.saveAttachment(dirParts, safeName, file);
+        const encoded = toMarkdownLinkTarget(targetName);
+        snippets.push(isImage
+          ? `![${stripFileExtension(targetName)}](${encoded})`
+          : `[${targetName}](${encoded})`);
+        continue;
+      }
+
+      if (!isImage) {
+        this.setSaveStatus('error', '请先打开文件夹，再把文件拖入作为附件');
+        return;
+      }
+
+      const dataUrl = await readFileAsDataUrl(file);
+      snippets.push(`![${stripFileExtension(safeName)}](${dataUrl})`);
+    }
+
+    if (snippets.length) {
+      this.editor.insertBlock(snippets.join('\n'));
+    }
+  }
+
+  async fileExistsInDir(dirParts, name) {
+    const directoryHandle = await this.fs.getDirectoryByParts(dirParts);
+    if (!directoryHandle) {
+      return false;
+    }
+    return this.fs.fileExists(directoryHandle, name);
+  }
+
+  resolvePreviewLinkTarget(href) {
+    const workspacePath = this.currentFile?.path || (this.fs.rootHandle ? this.snapshotFile?.path : '');
+    if (workspacePath) {
+      const parts = resolveWorkspaceResourcePath(href, workspacePath);
+      if (parts && parts.length) {
+        return { kind: 'file', parts, name: parts.at(-1) || '' };
+      }
+    }
+
+    const fileUrl = this.importedFile?.url || this.snapshotFile?.url || '';
+    const url = resolveFileResourceUrl(href, fileUrl);
+    if (url) {
+      return { kind: 'url', url, name: url.split('/').pop() || '' };
+    }
+
+    return null;
+  }
+
+  // 预览里点击相对链接：Markdown / txt 在工作区打开，其它文件（pdf、图片等）用新标签页预览
+  async openPreviewLink(target) {
+    if (!target) {
+      return;
+    }
+
+    if (target.kind === 'file' && target.parts) {
+      const fileName = target.name || target.parts.at(-1) || '';
+      if (isMarkdownFile(fileName) || isTxtFile(fileName)) {
+        const node = this.currentTree
+          ? await this.fs.loadPath(this.currentTree, `/${target.parts.join('/')}`)
+          : null;
+        if (node?.type === 'file') {
+          if (this.currentTree) {
+            this.tree.setRoot(this.currentTree);
+          }
+          await this.openFile(node);
+          return;
+        }
+        this.setSaveStatus('error', `找不到文件：${fileName}`);
+        return;
+      }
+
+      const file = await this.fs.readFileByPathParts(target.parts);
+      if (!file) {
+        this.setSaveStatus('error', `找不到文件：${fileName}`);
+        return;
+      }
+      this.openBlobInNewTab(file);
+      return;
+    }
+
+    if (target.kind === 'url' && target.url) {
+      if (isMarkdownFile(target.name) || isTxtFile(target.name)) {
+        await this.openUrlInStudio(target.url, target.name);
+        return;
+      }
+      window.open(target.url, '_blank');
+    }
+  }
+
+  async openUrlInStudio(url, name) {
+    try {
+      await this.ensureSafeFileSwitch();
+      const content = await this.readTextFromUrl(url);
+      this.loadImportedFile({ name: name || 'document.md', url, content });
+      this.updateFileTitle();
+      this.updateStats();
+    } catch (error) {
+      this.setSaveStatus('error', error.message || '无法打开文件');
+    }
+  }
+
+  async readTextFromUrl(url) {
+    let response;
+    try {
+      response = await fetch(url, { cache: 'no-store' });
+    } catch (error) {
+      throw new Error(`无法打开文件：${error.message}`);
+    }
+    if (!response.ok) {
+      throw new Error(`无法打开文件：HTTP ${response.status}`);
+    }
+    return response.text();
+  }
+
+  openBlobInNewTab(file) {
+    const url = URL.createObjectURL(file);
+    const opened = window.open(url, '_blank');
+    if (!opened) {
+      URL.revokeObjectURL(url);
+      this.setSaveStatus('error', '无法打开新标签页，请允许弹出窗口');
+      return;
+    }
+    opened.opener = null;
+    window.setTimeout(() => URL.revokeObjectURL(url), 60000);
   }
 
   async adjustFontSize(delta) {
