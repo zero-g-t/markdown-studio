@@ -3,6 +3,7 @@ import MarkdownIt from 'markdown-it';
 import markdownItTaskLists from 'markdown-it-task-lists';
 import mermaid from 'mermaid';
 import { extractOutlineItems, inlineTokensToText, slugifyHeadingText } from './outline.js';
+import { WorkspaceTabs } from './workspace-tabs.js';
 import {
   isLocalResourcePath,
   resolveFileResourceUrl,
@@ -21,6 +22,7 @@ import {
   Code,
   Columns2,
   Copy,
+  Crosshair,
   Dot,
   Eye,
   FilePlus,
@@ -44,6 +46,7 @@ import {
   Quote,
   RefreshCw,
   Save,
+  Search,
   Settings,
   SquareCode,
   Strikethrough,
@@ -58,6 +61,7 @@ const MARKDOWN_EXTENSIONS = new Set(['.md', '.markdown', '.mdown', '.mkd']);
 const TXT_EXTENSION = new Set(['.txt']);
 const AUTOSAVE_DELAY = 650;
 const PREVIEW_DELAY = 180;
+const FILE_SEARCH_DELAY = 120;
 const DEFAULT_REFRESH_INTERVAL_SECONDS = 3;
 const MIN_REFRESH_INTERVAL_SECONDS = 1;
 const MAX_REFRESH_INTERVAL_SECONDS = 60;
@@ -69,6 +73,7 @@ const studioIcons = {
   Code,
   Columns2,
   Copy,
+  Crosshair,
   Dot,
   Eye,
   FilePlus,
@@ -92,6 +97,7 @@ const studioIcons = {
   Quote,
   RefreshCw,
   Save,
+  Search,
   Settings,
   SquareCode,
   Strikethrough,
@@ -173,6 +179,26 @@ function formatDisplayPath(pathOrUrl) {
   } catch {
     return pathOrUrl;
   }
+}
+
+// 子序列模糊匹配：忽略大小写，返回命中字符下标（未命中返回 null）
+function fuzzyMatchIndices(text, query) {
+  const source = String(text || '').toLowerCase();
+  const target = String(query || '').toLowerCase();
+  if (!target) {
+    return null;
+  }
+  const indices = [];
+  let cursor = 0;
+  for (const char of target) {
+    const index = source.indexOf(char, cursor);
+    if (index < 0) {
+      return null;
+    }
+    indices.push(index);
+    cursor = index + 1;
+  }
+  return indices;
 }
 
 function normalizeFileName(name) {
@@ -297,7 +323,8 @@ class PreferenceStore {
       previewAutoRefresh: true,
       previewRefreshInterval: DEFAULT_REFRESH_INTERVAL_SECONDS,
       themeColor: THEME_COLORS[0].id,
-      historyCollapsed: false
+      historyCollapsed: false,
+      workspaceTabs: null
     };
   }
 
@@ -1477,6 +1504,9 @@ class TreeView {
     this.root = null;
     this.activePath = '';
     this.openPaths = new Set(['/']);
+    // 搜索态：filterPaths 为命中文件路径集合，渲染时裁剪子树并强制展开祖先
+    this.filterQuery = '';
+    this.filterPaths = null;
   }
 
   setRoot(root) {
@@ -1489,6 +1519,16 @@ class TreeView {
   setActivePath(path) {
     this.activePath = path;
     this.render();
+  }
+
+  setFilter(query = '', matchedPaths = null) {
+    this.filterQuery = query.trim();
+    this.filterPaths = matchedPaths;
+    this.render();
+  }
+
+  clearFilter() {
+    this.setFilter('', null);
   }
 
   collectOpenPaths(node) {
@@ -1507,14 +1547,62 @@ class TreeView {
       return;
     }
 
+    if (this.filterPaths) {
+      const filtered = this.buildFilteredNode(this.root);
+      if (!filtered) {
+        this.container.innerHTML = '<div class="empty-state compact">没有找到匹配的文件</div>';
+        return;
+      }
+      const wrapper = document.createElement('div');
+      wrapper.className = 'tree-root';
+      wrapper.append(this.renderNode(filtered, 0, true));
+      this.container.replaceChildren(wrapper);
+      renderIcons();
+      return;
+    }
+
     const wrapper = document.createElement('div');
     wrapper.className = 'tree-root';
-    wrapper.append(this.renderNode(this.root, 0));
+    wrapper.append(this.renderNode(this.root, 0, false));
     this.container.replaceChildren(wrapper);
     renderIcons();
   }
 
-  renderNode(node, depth) {
+  // 按命中集合裁剪树：文件命中才保留，目录仅作为命中文件的祖先保留，并强制展开
+  buildFilteredNode(node) {
+    if (node.type !== 'directory') {
+      return this.filterPaths.has(node.path) ? node : null;
+    }
+
+    const children = (node.children || [])
+      .map((child) => this.buildFilteredNode(child))
+      .filter(Boolean);
+
+    if (!children.length) {
+      return null;
+    }
+
+    return { ...node, children, isOpen: true };
+  }
+
+  renderLabel(name) {
+    if (!this.filterQuery) {
+      return escapeHtml(name);
+    }
+    const indices = fuzzyMatchIndices(name, this.filterQuery);
+    if (!indices) {
+      return escapeHtml(name);
+    }
+    const marked = new Set(indices);
+    let html = '';
+    Array.from(name).forEach((char, index) => {
+      const escaped = escapeHtml(char);
+      html += marked.has(index) ? `<mark>${escaped}</mark>` : escaped;
+    });
+    return html;
+  }
+
+  renderNode(node, depth, forceOpen) {
     const item = document.createElement('div');
     item.className = `tree-node ${node.type}`;
     item.dataset.path = node.path;
@@ -1530,14 +1618,14 @@ class TreeView {
     }
 
     const isDirectory = node.type === 'directory';
-    const isOpen = this.openPaths.has(node.path);
+    const isOpen = forceOpen ? true : this.openPaths.has(node.path);
     const isTxt = node.isTxt;
     const iconName = isDirectory ? (isOpen ? 'folder-open' : 'folder') : (isTxt ? 'file-text' : 'file-text');
 
     button.innerHTML = `
       <i class="tree-chevron" data-lucide="${isDirectory ? (isOpen ? 'chevron-down' : 'chevron-right') : 'dot'}"></i>
       <i class="tree-icon" data-lucide="${iconName}"></i>
-      <span class="tree-label">${escapeHtml(node.name)}</span>
+      <span class="tree-label">${this.renderLabel(node.name)}</span>
     `;
 
     button.addEventListener('click', () => {
@@ -1558,11 +1646,25 @@ class TreeView {
     if (isDirectory && isOpen && node.children?.length) {
       const children = document.createElement('div');
       children.className = 'tree-children';
-      node.children.forEach((child) => children.append(this.renderNode(child, depth + 1)));
+      node.children.forEach((child) => children.append(this.renderNode(child, depth + 1, forceOpen)));
       item.append(children);
     }
 
     return item;
+  }
+
+  // 定位到指定文件：滚动进入视口并短暂高亮
+  flashNode(path) {
+    const row = this.container.querySelector(`.tree-node[data-path="${CSS.escape(path)}"] > .tree-row`);
+    if (!row) {
+      return;
+    }
+    row.scrollIntoView({ block: 'center', inline: 'nearest' });
+    row.classList.remove('flash');
+    // 强制回流，保证连续两次定位都能重新触发动画
+    void row.offsetWidth;
+    row.classList.add('flash');
+    window.setTimeout(() => row.classList.remove('flash'), 1000);
   }
 }
 
@@ -1625,6 +1727,11 @@ class MarkdownStudioApp {
     this.historyCollapsed = false;
     this.plaintextPreview = null;
     this.lastExternalCheckAt = 0;
+    this.tabs = null;
+    this.savedWorkspaceTabs = null;
+    this.fileIndex = null;
+    this.searchQuery = '';
+    this.runFileSearch = debounce((value) => this.applyFileSearch(value), FILE_SEARCH_DELAY);
     this.refreshPreview = debounce(() => {
       if (this.previewAutoRefresh) {
         this.renderCurrentPreview();
@@ -1707,6 +1814,13 @@ class MarkdownStudioApp {
     });
     this.outline = new OutlineManager(this.root.querySelector('#outlineHost'), this.editor, this.preview);
     this.scrollSync = new EditorPreviewScrollSync(this.editor, this.preview);
+    this.savedWorkspaceTabs = prefs.workspaceTabs || null;
+    this.tabs = new WorkspaceTabs(this.root.querySelector('#tabStrip'), {
+      onActivate: (path) => this.activateTab(path),
+      onRequestClose: (paths) => this.closeTabs(paths),
+      onContextMenu: (event, path) => this.openTabContextMenu(event, path),
+      renderIcons
+    });
     this.tree = new TreeView(this.root.querySelector('#treeHost'), {
       onOpenFile: (node) => this.openFile(node),
       onToggleDirectory: (node) => this.toggleDirectory(node),
@@ -1740,6 +1854,7 @@ class MarkdownStudioApp {
       }
       await this.restorePreviousDirectory(prefs.activePath);
     }
+    this.updateLocateButton();
     await this.loadDirectoryHistory();
     this.updateFileTitle();
     this.updateStats();
@@ -1804,8 +1919,20 @@ class MarkdownStudioApp {
           <aside class="sidebar" id="leftSidebar">
             <div class="panel-header">
               <h2>文件</h2>
-              <button id="newRootFileButton" class="icon-button small" type="button" title="在根目录新建 Markdown 文件">
-                <i data-lucide="file-plus"></i>
+              <div class="panel-actions">
+                <button id="locateFileButton" class="icon-button small" type="button" title="在目录树中定位当前文件">
+                  <i data-lucide="crosshair"></i>
+                </button>
+                <button id="newRootFileButton" class="icon-button small" type="button" title="在根目录新建 Markdown 文件">
+                  <i data-lucide="file-plus"></i>
+                </button>
+              </div>
+            </div>
+            <div class="sidebar-search">
+              <i class="sidebar-search-icon" data-lucide="search"></i>
+              <input id="fileSearchInput" class="sidebar-search-input" type="search" placeholder="搜索文件名" autocomplete="off" spellcheck="false" />
+              <button id="clearFileSearchButton" class="sidebar-search-clear" type="button" title="清空搜索" hidden>
+                <i data-lucide="x"></i>
               </button>
             </div>
             <div id="supportNotice" class="support-notice"></div>
@@ -1821,6 +1948,7 @@ class MarkdownStudioApp {
           <div class="resize-handle sidebar-resize-handle" id="leftResizeHandle" title="拖动调整左侧面板宽度"></div>
 
           <section class="main-pane">
+            <nav id="tabStrip" class="tab-strip" role="tablist" aria-label="已打开文件" hidden></nav>
             <div class="document-bar">
               <div>
                 <h1 id="fileTitle">未命名文档</h1>
@@ -1909,6 +2037,26 @@ class MarkdownStudioApp {
     this.root.querySelector('#refreshButton').addEventListener('click', () => this.refreshDirectory());
     this.root.querySelector('#saveButton').addEventListener('click', () => this.saveCurrentFile('manual'));
     this.root.querySelector('#newRootFileButton').addEventListener('click', () => this.createInRoot('file'));
+    this.root.querySelector('#locateFileButton').addEventListener('click', () => this.revealActiveFile());
+
+    const searchInput = this.root.querySelector('#fileSearchInput');
+    const clearSearchButton = this.root.querySelector('#clearFileSearchButton');
+    searchInput.addEventListener('input', () => {
+      clearSearchButton.hidden = searchInput.value === '';
+      this.searchQuery = searchInput.value.trim();
+      this.runFileSearch(searchInput.value);
+    });
+    searchInput.addEventListener('keydown', (event) => {
+      if (event.key !== 'Escape') {
+        return;
+      }
+      event.preventDefault();
+      this.clearFileSearch();
+    });
+    clearSearchButton.addEventListener('click', () => {
+      this.clearFileSearch();
+      searchInput.focus();
+    });
     this.root.querySelector('#manualPreviewRefreshButton').addEventListener('click', () => this.refreshDocumentView({ interactive: true }));
     this.root.querySelector('#copyPlainTextButton').addEventListener('click', () => this.copyPlainText());
     this.root.querySelector('#historyToggleButton').addEventListener('click', () => this.toggleDirectoryHistory());
@@ -1974,6 +2122,13 @@ class MarkdownStudioApp {
       const savedText = this.importedFile
         ? '只读导入'
         : (this.snapshotFile ? '等待恢复文件' : '已保存');
+      if (this.currentFile) {
+        this.tabs.updateState(this.currentFile.path, {
+          content: this.currentFileIsTxt ? this.lastSavedContent : content,
+          scrollTop: this.editor.view.scrollDOM.scrollTop,
+          dirty: this.dirty
+        });
+      }
       this.setSaveStatus(this.dirty ? 'dirty' : 'saved', this.dirty ? dirtyText : savedText);
       if (this.previewAutoRefresh) {
         this.refreshPreview();
@@ -2131,6 +2286,10 @@ class MarkdownStudioApp {
     this.editor.setContent(this.lastSavedContent);
     this.preview.render(this.lastSavedContent);
     this.outline.update(this.lastSavedContent);
+    // 导入/快照文件不在工作区内，页签保留但没有选中项
+    this.tabs.clearActive();
+    this.updateLocateButton();
+    this.persistWorkspaceTabs().catch((error) => console.warn('Failed to persist workspace tabs', error));
     this.setSaveStatus('idle', '只读导入');
     this.persistDocumentSnapshot();
   }
@@ -2144,6 +2303,8 @@ class MarkdownStudioApp {
     this.editor.setContent(this.lastSavedContent);
     this.preview.render(this.lastSavedContent);
     this.outline.update(this.lastSavedContent);
+    this.tabs.clearActive();
+    this.updateLocateButton();
     this.setSaveStatus('idle', '正在恢复文件');
   }
 
@@ -2175,15 +2336,22 @@ class MarkdownStudioApp {
       }
 
       this.currentTree = tree;
+      const restoredTabCount = await this.restoreWorkspaceTabs(tree);
       this.tree.setRoot(tree);
 
-      const activeNode = activePath ? await this.fs.loadPath(tree, activePath) : null;
+      const tabPath = this.tabs.getActivePath();
+      const targetPath = tabPath || activePath;
+      const activeNode = targetPath ? await this.fs.loadPath(tree, targetPath) : null;
       if (activeNode) {
         this.tree.setRoot(tree);
       }
       if (activeNode?.type === 'file') {
         if (this.snapshotFile?.path === activeNode.path) {
           await this.bindRestoredFile(activeNode, this.snapshotFile.content || '');
+          return;
+        }
+        if (restoredTabCount && tabPath) {
+          await this.activateTab(activeNode.path);
           return;
         }
         await this.openFile(activeNode);
@@ -2197,21 +2365,60 @@ class MarkdownStudioApp {
     }
   }
 
+  // 按目录恢复页签：目录名不一致（换项目）或路径已失效的页签直接丢弃
+  async restoreWorkspaceTabs(tree) {
+    const stored = this.savedWorkspaceTabs;
+    this.savedWorkspaceTabs = null;
+    const directoryName = tree?.name || '';
+
+    if (!stored || stored.directoryName !== directoryName || !Array.isArray(stored.tabs) || !stored.tabs.length) {
+      this.tabs.reset(directoryName);
+      await this.persistWorkspaceTabs();
+      return 0;
+    }
+
+    const entries = [];
+    for (const item of stored.tabs) {
+      const node = item?.path ? await this.fs.loadPath(tree, item.path) : null;
+      if (node?.type === 'file') {
+        entries.push({ path: node.path, name: node.name, isTxt: Boolean(node.isTxt) });
+      }
+    }
+
+    this.tabs.reset(directoryName);
+    this.tabs.restore(entries, stored.activePath);
+    if (entries.length !== stored.tabs.length) {
+      await this.persistWorkspaceTabs();
+    }
+    renderIcons();
+    return entries.length;
+  }
+
   async bindRestoredFile(node, snapshotContent) {
     const diskContent = await this.fs.readFile(node.handle);
     this.currentFile = node;
     this.importedFile = null;
     this.snapshotFile = null;
+    this.currentFileIsTxt = Boolean(node.isTxt);
     this.lastSavedContent = diskContent;
     this.dirty = snapshotContent !== diskContent;
     this.editor.setContent(snapshotContent);
     this.preview.render(snapshotContent);
     this.outline.update(snapshotContent);
+    this.tabs.openFile({ path: node.path, name: node.name, isTxt: node.isTxt });
+    this.tabs.updateState(node.path, {
+      content: snapshotContent,
+      lastSavedContent: diskContent,
+      dirty: this.dirty,
+      scrollTop: 0
+    });
     this.tree.setActivePath(node.path);
     this.updateFileTitle();
     this.updateStats();
+    this.updateLocateButton();
     this.setSaveStatus(this.dirty ? 'dirty' : 'saved', this.dirty ? '有未保存修改' : '已保存');
     await this.preferences.save({ activePath: node.path });
+    await this.persistWorkspaceTabs();
     this.persistDocumentSnapshot().catch((error) => console.warn('Failed to persist document snapshot', error));
   }
 
@@ -2346,6 +2553,9 @@ class MarkdownStudioApp {
 
   async applyPickedDirectory(tree) {
     this.currentTree = tree;
+    this.fileIndex = null;
+    this.clearFileSearch();
+    this.tabs.reset(tree?.name || '');
     this.tree.setRoot(this.currentTree);
 
     this.importedFile = null;
@@ -2359,9 +2569,11 @@ class MarkdownStudioApp {
     this.plaintextPreview.render('');
     this.outline.update('');
     await this.preferences.save({ activePath: '', documentSnapshot: null });
+    await this.persistWorkspaceTabs();
     this.setSaveStatus('idle', '请选择文件');
     this.updateFileTitle();
     this.updateStats();
+    this.updateLocateButton();
     renderIcons();
   }
 
@@ -2371,8 +2583,13 @@ class MarkdownStudioApp {
     }
     try {
       this.currentTree = await this.fs.refreshTree();
+      this.fileIndex = null;
       this.tree.setRoot(this.currentTree);
+      await this.reconcileTabsWithTree();
       this.tree.setActivePath(this.currentFile?.path || '');
+      if (this.searchQuery) {
+        await this.applyFileSearch(this.searchQuery);
+      }
       renderIcons();
     } catch (error) {
       if (error.message === 'CANCELLED_BY_USER') {
@@ -2380,6 +2597,38 @@ class MarkdownStudioApp {
       }
       this.showError(error);
     }
+  }
+
+  // 目录刷新后，页签里指向已不存在文件的条目要剔除，避免点开时报错
+  async reconcileTabsWithTree() {
+    const paths = this.tabs.list().map((tab) => tab.path);
+    if (!paths.length) {
+      return;
+    }
+
+    const missing = [];
+    for (const path of paths) {
+      const node = await this.fs.loadPath(this.currentTree, path);
+      if (!node || node.type !== 'file') {
+        missing.push(path);
+      }
+    }
+
+    if (!missing.length) {
+      return;
+    }
+
+    const activeWasMissing = missing.includes(this.currentFile?.path);
+    const nextActive = this.tabs.removePaths(missing);
+    if (activeWasMissing) {
+      this.currentFile = null;
+      if (nextActive) {
+        await this.activateTab(nextActive);
+      } else {
+        await this.clearDocument();
+      }
+    }
+    await this.persistWorkspaceTabs();
   }
 
   async toggleDirectory(node) {
@@ -2403,30 +2652,40 @@ class MarkdownStudioApp {
   }
 
   async openFile(node) {
-    const shouldResetScroll = node.path !== this.currentFile?.path;
+    if (!node || node.type !== 'file') {
+      return;
+    }
 
+    // 已打开过的文件只切页签，不重复读盘
+    if (this.tabs.has(node.path)) {
+      await this.activateTab(node.path);
+      return;
+    }
+
+    await this.openFileTab(node);
+  }
+
+  async openFileTab(node) {
     try {
-      await this.ensureSafeFileSwitch();
       this.setSaveStatus('saving', '正在打开文件');
-      const content = await this.fs.readFile(node.handle);
-      this.importedFile = null;
-      this.snapshotFile = null;
-      this.currentFile = node;
-      this.currentFileIsTxt = node.isTxt || false;
-      this.lastSavedContent = content;
-      this.dirty = false;
-
-      this.renderDocumentContent(content);
-
-      if (shouldResetScroll) {
-        this.resetDocumentScroll();
+      if (!this.currentFile) {
+        await this.ensureSafeFileSwitch();
+      } else {
+        this.captureActiveTab();
+        if (this.autosave) {
+          await this.saveCurrentFile('auto');
+        }
       }
 
-      this.tree.setActivePath(node.path);
-      this.updateFileTitle();
-      this.setSaveStatus('saved', '已保存');
-      await this.preferences.save({ activePath: node.path });
-      this.persistDocumentSnapshot().catch((error) => console.warn('Failed to persist document snapshot', error));
+      const content = await this.fs.readFile(node.handle);
+      this.tabs.openFile({ path: node.path, name: node.name, isTxt: node.isTxt });
+      this.tabs.updateState(node.path, {
+        content,
+        lastSavedContent: content,
+        dirty: false,
+        scrollTop: 0
+      });
+      await this.applyDocumentFromTab(node, content, content, false, { resetScroll: true });
       if (!this.currentFileIsTxt) {
         this.editor.focus();
       }
@@ -2436,6 +2695,170 @@ class MarkdownStudioApp {
       }
       this.showError(error);
     }
+  }
+
+  async activateTab(path, { skipCapture = false } = {}) {
+    const tab = this.tabs.getTab(path);
+    if (!tab) {
+      return;
+    }
+
+    if (this.currentFile?.path === path) {
+      this.tabs.activate(path);
+      return;
+    }
+
+    try {
+      this.setSaveStatus('saving', '正在切换文件');
+      if (!skipCapture) {
+        if (!this.currentFile) {
+          await this.ensureSafeFileSwitch();
+        } else {
+          this.captureActiveTab();
+          if (this.autosave) {
+            await this.saveCurrentFile('auto');
+          }
+        }
+      }
+
+      const node = await this.fs.loadPath(this.currentTree, path);
+      if (!node || node.type !== 'file') {
+        this.tabs.removePaths([path]);
+        await this.persistWorkspaceTabs();
+        this.setSaveStatus('error', `文件已不存在：${tab.name}`);
+        return;
+      }
+
+      // 首次激活才读盘，之后都用页签里的草稿（自动保存关闭时也不丢编辑）
+      let content = tab.content;
+      let lastSavedContent = tab.lastSavedContent;
+      if (content === null) {
+        content = await this.fs.readFile(node.handle);
+        lastSavedContent = content;
+      }
+
+      this.tabs.updateState(path, {
+        name: node.name,
+        isTxt: Boolean(node.isTxt),
+        content,
+        lastSavedContent
+      });
+      await this.applyDocumentFromTab(node, content, lastSavedContent, tab.dirty, {
+        resetScroll: false,
+        scrollTop: tab.scrollTop
+      });
+      if (!this.currentFileIsTxt) {
+        this.editor.focus();
+      }
+    } catch (error) {
+      if (error.message === 'CANCELLED_BY_USER') {
+        return;
+      }
+      this.showError(error);
+    }
+  }
+
+  // 把「编辑器里的当前文档」写回所属页签，切换/关闭前调用
+  captureActiveTab() {
+    if (!this.currentFile) {
+      return;
+    }
+    const tab = this.tabs.getTab(this.currentFile.path);
+    if (!tab) {
+      return;
+    }
+    this.tabs.updateState(this.currentFile.path, {
+      content: this.currentFileIsTxt ? this.lastSavedContent : this.editor.getContent(),
+      lastSavedContent: this.lastSavedContent,
+      dirty: this.dirty,
+      scrollTop: this.editor.view.scrollDOM.scrollTop
+    });
+  }
+
+  async applyDocumentFromTab(node, content, lastSavedContent, dirty, { resetScroll = true, scrollTop = 0 } = {}) {
+    this.importedFile = null;
+    this.snapshotFile = null;
+    this.currentFile = node;
+    this.currentFileIsTxt = Boolean(node.isTxt);
+    this.lastSavedContent = lastSavedContent;
+    this.dirty = Boolean(dirty);
+    this.tabs.activate(node.path);
+    this.renderDocumentContent(content);
+
+    if (resetScroll) {
+      this.resetDocumentScroll();
+    } else {
+      this.preview.resetScroll();
+      this.plaintextPreview.resetScroll();
+      this.editor.view.scrollDOM.scrollTop = scrollTop;
+    }
+
+    this.tree.setActivePath(node.path);
+    this.updateFileTitle();
+    this.updateStats();
+    this.updateLocateButton();
+    this.setSaveStatus(this.dirty ? 'dirty' : 'saved', this.dirty ? '有未保存修改' : '已保存');
+    await this.preferences.save({ activePath: node.path });
+    await this.persistWorkspaceTabs();
+    this.persistDocumentSnapshot().catch((error) => console.warn('Failed to persist document snapshot', error));
+  }
+
+  async closeTabs(paths) {
+    const targets = Array.from(new Set(paths || [])).filter((path) => this.tabs.has(path));
+    if (!targets.length) {
+      return;
+    }
+
+    const dirtyPaths = this.tabs.getDirtyPaths(targets);
+    if (dirtyPaths.length) {
+      const names = dirtyPaths.map((path) => this.tabs.getTab(path)?.name || path);
+      const message = dirtyPaths.length === 1
+        ? `「${names[0]}」有未保存修改，确认关闭？`
+        : `以下 ${dirtyPaths.length} 个文件有未保存修改：\n${names.join('\n')}\n确认关闭？`;
+      if (!window.confirm(message)) {
+        return;
+      }
+    }
+
+    const activePath = this.currentFile?.path || '';
+    const nextActive = this.tabs.removePaths(targets);
+    await this.persistWorkspaceTabs();
+
+    if (!targets.includes(activePath)) {
+      return;
+    }
+
+    if (nextActive) {
+      await this.activateTab(nextActive, { skipCapture: true });
+      return;
+    }
+
+    await this.clearDocument();
+  }
+
+  async clearDocument() {
+    this.importedFile = null;
+    this.currentFile = null;
+    this.snapshotFile = null;
+    this.currentFileIsTxt = false;
+    this.lastSavedContent = '';
+    this.dirty = false;
+    this.editor.setContent('');
+    this.preview.render('');
+    this.plaintextPreview.render('');
+    this.outline.update('');
+    this.tabs.clearActive();
+    this.tree.setActivePath('');
+    this.updateFileTitle();
+    this.updateStats();
+    this.updateLocateButton();
+    this.setSaveStatus('idle', this.currentTree ? '请选择文件' : '未打开文件');
+    await this.preferences.save({ activePath: '', documentSnapshot: null });
+    await this.persistWorkspaceTabs();
+  }
+
+  async persistWorkspaceTabs() {
+    await this.preferences.save({ workspaceTabs: this.tabs.serialize() });
   }
 
   resetDocumentScroll() {
@@ -2496,21 +2919,34 @@ class MarkdownStudioApp {
       return;
     }
 
+    // 入队时就锁定目标文件与内容：排队期间可能切换页签，不能把 A 的内容写进 B 的句柄
+    const targetFile = this.currentFile;
+    const content = this.currentFileIsTxt ? this.lastSavedContent : this.editor.getContent();
+    const isActiveTarget = () => this.currentFile?.path === targetFile.path;
+
     this.saveQueue = this.saveQueue.then(async () => {
-      const content = this.editor.getContent();
       if (mode === 'auto' && content === this.lastSavedContent) {
         return;
       }
 
       try {
         this.setSaveStatus('saving', mode === 'auto' ? '自动保存中' : '保存中');
-        await this.fs.writeFile(this.currentFile.handle, content);
+        await this.fs.writeFile(targetFile.handle, content);
+        this.tabs.updateState(targetFile.path, {
+          content,
+          lastSavedContent: content,
+          dirty: false
+        });
+        if (!isActiveTarget()) {
+          return;
+        }
         this.lastSavedContent = content;
         this.dirty = false;
         this.persistDocumentSnapshot().catch((error) => console.warn('Failed to persist document snapshot', error));
         this.setSaveStatus('saved', '已保存');
       } catch (error) {
-        this.dirty = true;
+        this.tabs.setDirty(targetFile.path, true);
+        this.dirty = isActiveTarget() ? true : this.dirty;
         this.setSaveStatus('error', '保存失败');
         this.showError(error);
       }
@@ -3002,6 +3438,13 @@ class MarkdownStudioApp {
 
     this.lastSavedContent = diskContent;
     this.dirty = false;
+    if (this.currentFile) {
+      this.tabs.updateState(this.currentFile.path, {
+        content: diskContent,
+        lastSavedContent: diskContent,
+        dirty: false
+      });
+    }
     this.renderDocumentContent(diskContent);
     this.setSaveStatus('saved', '已从磁盘重新加载');
     this.persistDocumentSnapshot().catch((error) => console.warn('Failed to persist document snapshot', error));
@@ -3062,6 +3505,138 @@ class MarkdownStudioApp {
     } else {
       path.textContent = displayPath || '选择文件夹后打开 Markdown 文件';
     }
+    this.updateLocateButton();
+  }
+
+  updateLocateButton() {
+    const button = this.root.querySelector('#locateFileButton');
+    if (!button) {
+      return;
+    }
+    const canLocate = Boolean(this.currentFile?.path && this.currentTree);
+    button.disabled = !canLocate;
+    button.title = canLocate ? '在目录树中定位当前文件' : '当前文档不在项目目录中';
+  }
+
+  /* ---------- 左栏搜索 ---------- */
+
+  // 目录树是懒加载的，搜索需要完整文件清单：首次搜索时把整棵树读进内存做一次索引
+  async ensureFileIndex() {
+    if (this.fileIndex) {
+      return this.fileIndex;
+    }
+    if (!this.currentTree) {
+      return [];
+    }
+
+    const index = [];
+    const walk = async (node) => {
+      await this.fs.loadChildren(node);
+      for (const child of node.children || []) {
+        if (child.type === 'directory') {
+          await walk(child);
+        } else {
+          index.push({
+            path: child.path,
+            name: child.name,
+            relativePath: child.path.replace(/^\//, '')
+          });
+        }
+      }
+    };
+
+    await walk(this.currentTree);
+    this.fileIndex = index;
+    return index;
+  }
+
+  async applyFileSearch(rawQuery) {
+    const query = String(rawQuery || '').trim();
+    if (!this.tree) {
+      return;
+    }
+    if (this.searchQuery !== query) {
+      // 输入已变化，丢弃这次（防抖后过期）的查询
+      return;
+    }
+    if (!query) {
+      this.tree.clearFilter();
+      this.tree.setActivePath(this.currentFile?.path || '');
+      return;
+    }
+    if (!this.currentTree) {
+      return;
+    }
+
+    try {
+      this.setSaveStatus('saving', '正在搜索文件');
+      const index = await this.ensureFileIndex();
+      if (this.searchQuery !== query) {
+        return;
+      }
+
+      const matched = new Set();
+      for (const item of index) {
+        if (fuzzyMatchIndices(item.name, query) || fuzzyMatchIndices(item.relativePath, query)) {
+          matched.add(item.path);
+        }
+      }
+
+      this.tree.setFilter(query, matched);
+      this.setSaveStatus('idle', matched.size ? `找到 ${matched.size} 个文件` : '没有匹配的文件');
+    } catch (error) {
+      this.showError(error);
+    }
+  }
+
+  clearFileSearch() {
+    this.searchQuery = '';
+    const input = this.root.querySelector('#fileSearchInput');
+    if (input) {
+      input.value = '';
+    }
+    const clearButton = this.root.querySelector('#clearFileSearchButton');
+    if (clearButton) {
+      clearButton.hidden = true;
+    }
+    if (!this.tree) {
+      return;
+    }
+    this.tree.clearFilter();
+    this.tree.setActivePath(this.currentFile?.path || '');
+    if (this.currentFile) {
+      this.setSaveStatus(this.dirty ? 'dirty' : 'saved', this.dirty ? '有未保存修改' : '已保存');
+    } else {
+      this.setSaveStatus('idle', this.currentTree ? '请选择文件' : '未打开文件');
+    }
+  }
+
+  /* ---------- 目录树定位 ---------- */
+
+  async revealActiveFile() {
+    const path = this.currentFile?.path || '';
+    if (!path || !this.currentTree) {
+      this.setSaveStatus('idle', '当前文档不在项目目录中');
+      return;
+    }
+
+    if (this.searchQuery) {
+      this.clearFileSearch();
+    }
+
+    try {
+      const node = await this.fs.loadPath(this.currentTree, path);
+      if (!node || node.type !== 'file') {
+        this.setSaveStatus('error', `目录树中找不到文件：${path}`);
+        return;
+      }
+      // loadPath 已把祖先目录 isOpen 置真，setRoot 会据此重建展开状态
+      this.tree.setRoot(this.currentTree);
+      this.tree.setActivePath(path);
+      this.tree.flashNode(path);
+    } catch (error) {
+      this.showError(error);
+    }
   }
 
   updateStats() {
@@ -3085,7 +3660,6 @@ class MarkdownStudioApp {
   }
 
   openContextMenu(event, node) {
-    const menu = this.root.querySelector('#contextMenu');
     const canCreateInside = node.type === 'directory';
     const parentTarget = canCreateInside ? node : null;
     const actions = [
@@ -3112,10 +3686,48 @@ class MarkdownStudioApp {
       }
     ].filter(Boolean);
 
+    this.showMenuAt(event.clientX, event.clientY, actions);
+  }
+
+  openTabContextMenu(event, path) {
+    const index = this.tabs.list().findIndex((tab) => tab.path === path);
+    const total = this.tabs.list().length;
+    const hasRight = index >= 0 && index < total - 1;
+    const actions = [
+      {
+        icon: 'x',
+        label: '关闭',
+        run: () => this.closeTabs([path])
+      },
+      {
+        icon: 'x',
+        label: '关闭其他',
+        disabled: total <= 1,
+        run: () => this.closeTabs(this.tabs.getCloseTargets(path, 'others'))
+      },
+      {
+        icon: 'x',
+        label: '关闭右侧',
+        disabled: !hasRight,
+        run: () => this.closeTabs(this.tabs.getCloseTargets(path, 'right'))
+      },
+      {
+        icon: 'x',
+        label: '关闭全部',
+        run: () => this.closeTabs(this.tabs.getCloseTargets(path, 'all'))
+      }
+    ];
+
+    this.showMenuAt(event.clientX, event.clientY, actions);
+  }
+
+  showMenuAt(clientX, clientY, actions) {
+    const menu = this.root.querySelector('#contextMenu');
     menu.replaceChildren(...actions.map((action) => {
       const button = document.createElement('button');
       button.type = 'button';
       button.className = action.danger ? 'danger' : '';
+      button.disabled = Boolean(action.disabled);
       button.innerHTML = `<i data-lucide="${action.icon}"></i><span>${escapeHtml(action.label)}</span>`;
       button.addEventListener('click', (clickEvent) => {
         clickEvent.stopPropagation();
@@ -3127,8 +3739,8 @@ class MarkdownStudioApp {
 
     menu.hidden = false;
     const rect = this.root.getBoundingClientRect();
-    menu.style.left = `${Math.min(event.clientX - rect.left, rect.width - 190)}px`;
-    menu.style.top = `${Math.min(event.clientY - rect.top, rect.height - 170)}px`;
+    menu.style.left = `${Math.min(clientX - rect.left, rect.width - 190)}px`;
+    menu.style.top = `${Math.min(clientY - rect.top, rect.height - 190)}px`;
     renderIcons();
   }
 
@@ -3176,22 +3788,25 @@ class MarkdownStudioApp {
       await this.ensureSafeFileSwitch();
       const activePath = this.currentFile?.path || '';
       const renamedPath = this.getSiblingPath(node.path, name);
-      let activeTargetPath = null;
-
-      if (node.type === 'file' && activePath === node.path) {
-        activeTargetPath = renamedPath;
-      }
-      if (node.type === 'directory' && activePath.startsWith(`${node.path}/`)) {
-        activeTargetPath = `${renamedPath}${activePath.slice(node.path.length)}`;
-      }
+      const isActiveInside = Boolean(activePath)
+        && (activePath === node.path || activePath.startsWith(`${node.path}/`));
+      const activeRenamedPath = isActiveInside
+        ? `${renamedPath}${activePath.slice(node.path.length)}`
+        : '';
 
       await this.fs.renameEntry(node, name);
+      const tabsRenamed = this.tabs.renamePath(node.path, renamedPath);
+      if (tabsRenamed) {
+        await this.persistWorkspaceTabs();
+      }
+      // 重命名后旧句柄不可再用，先断开当前文件，再按新路径重新激活页签
+      if (isActiveInside) {
+        this.currentFile = null;
+        this.dirty = false;
+      }
       await this.refreshDirectory();
-      if (activeTargetPath) {
-        const renamedNode = await this.fs.loadPath(this.currentTree, activeTargetPath);
-        if (renamedNode?.type === 'file') {
-          await this.openFile(renamedNode);
-        }
+      if (activeRenamedPath && this.tabs.has(activeRenamedPath)) {
+        await this.activateTab(activeRenamedPath, { skipCapture: true });
       }
     } catch (error) {
       if (error.message === 'CANCELLED_BY_USER') {
@@ -3208,23 +3823,29 @@ class MarkdownStudioApp {
         return;
       }
       await this.ensureSafeFileSwitch();
+      const activePath = this.currentFile?.path || '';
+      const activeDeleted = Boolean(activePath)
+        && (activePath === node.path || activePath.startsWith(`${node.path}/`));
+
       await this.fs.deleteEntry(node);
-      if (this.currentFile?.path === node.path || this.currentFile?.path.startsWith(`${node.path}/`)) {
+      const removedPaths = this.tabs.list()
+        .filter((tab) => tab.path === node.path || tab.path.startsWith(`${node.path}/`))
+        .map((tab) => tab.path);
+      const nextActive = this.tabs.removePaths(removedPaths);
+      if (removedPaths.length) {
+        await this.persistWorkspaceTabs();
+      }
+      if (activeDeleted) {
         this.currentFile = null;
-        this.snapshotFile = null;
-        this.currentFileIsTxt = false;
-        this.lastSavedContent = '';
-        this.dirty = false;
-        this.editor.setContent('');
-        this.preview.render('');
-        this.plaintextPreview.render('');
-        this.outline.update('');
-        this.updateFileTitle();
-        this.updateStats();
-        this.setSaveStatus('idle', '未打开文件');
-        await this.preferences.save({ activePath: '', documentSnapshot: null });
       }
       await this.refreshDirectory();
+      if (activeDeleted) {
+        if (nextActive) {
+          await this.activateTab(nextActive, { skipCapture: true });
+        } else {
+          await this.clearDocument();
+        }
+      }
     } catch (error) {
       this.showError(error);
     }
