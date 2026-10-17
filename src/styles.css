@@ -603,6 +603,22 @@ svg {
   background: var(--surface);
 }
 
+/*
+ * 三块各自钉死所在行：页签栏在「无页签」时 display:none，若交给自动排列，
+ * 文件信息栏会顶到第 1 行、编辑区被挤进第 2 行的 58px，出现「打开文件后编辑区只有一条」。
+ */
+.main-pane > .tab-strip {
+  grid-row: 1;
+}
+
+.main-pane > .document-bar {
+  grid-row: 2;
+}
+
+.main-pane > .editor-preview {
+  grid-row: 3;
+}
+
 .tab-strip {
   display: flex;
   align-items: flex-end;

@@ -8,3 +8,5 @@ release/
 docs/
 .codebuddy/
 *.bat
+.workbuddy/
+promo-video/
