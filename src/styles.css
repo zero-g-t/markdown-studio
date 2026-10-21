@@ -1220,14 +1220,51 @@ svg {
 }
 
 .outline-list li {
+  display: flex;
+  align-items: center;
   padding-left: calc((var(--level) - 1) * 12px);
+}
+
+.outline-list li[hidden] {
+  display: none;
+}
+
+.outline-toggle {
+  display: inline-flex;
+  flex: 0 0 18px;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.outline-toggle svg {
+  width: 14px;
+  height: 14px;
+}
+
+.outline-toggle:hover {
+  background: var(--surface-muted);
+  color: var(--accent-strong);
+}
+
+.outline-toggle.empty {
+  cursor: default;
+  pointer-events: none;
 }
 
 .outline-item {
   display: grid;
   grid-template-columns: 28px minmax(0, 1fr);
   align-items: center;
-  width: 100%;
+  flex: 1 1 auto;
+  min-width: 0;
   min-height: 30px;
   padding: 0 7px;
   border-radius: 6px;

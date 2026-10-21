@@ -19,6 +19,8 @@ import {
   Bold,
   ChevronDown,
   ChevronRight,
+  ChevronsDownUp,
+  ChevronsUpDown,
   Code,
   Columns2,
   Copy,
@@ -70,6 +72,8 @@ const studioIcons = {
   Bold,
   ChevronDown,
   ChevronRight,
+  ChevronsDownUp,
+  ChevronsUpDown,
   Code,
   Columns2,
   Copy,
@@ -1336,6 +1340,7 @@ class OutlineManager {
     this.items = [];
     this.activeIndex = -1;
     this.onScrollUpdate = null;
+    this.collapsedKeys = new Set();
   }
 
   update(markdownSource) {
@@ -1347,6 +1352,49 @@ class OutlineManager {
     return extractOutlineItems(markdownSource);
   }
 
+  // 折叠状态按“层级 + 标题文本 + 同名序号”标识，避免重新渲染（编辑、刷新预览）后丢失
+  headingKeys() {
+    const counts = new Map();
+    return this.items.map((item) => {
+      const base = `${item.level}|${item.text}`;
+      const seen = counts.get(base) || 0;
+      counts.set(base, seen + 1);
+      return `${base}#${seen}`;
+    });
+  }
+
+  hasChildren(index) {
+    const current = this.items[index];
+    const next = this.items[index + 1];
+    return Boolean(current && next && next.level > current.level);
+  }
+
+  toggleCollapse(index) {
+    const key = this.headingKeys()[index];
+    if (!key) return;
+    if (this.collapsedKeys.has(key)) {
+      this.collapsedKeys.delete(key);
+    } else {
+      this.collapsedKeys.add(key);
+    }
+    this.render();
+  }
+
+  collapseAll() {
+    // 顶层标题视为根目录，保持展开；从次级目录（一级目录）开始折叠
+    const rootLevel = Math.min(...this.items.map((item) => item.level));
+    const keys = this.headingKeys();
+    this.collapsedKeys = new Set(
+      keys.filter((key, index) => this.items[index].level > rootLevel && this.hasChildren(index))
+    );
+    this.render();
+  }
+
+  expandAll() {
+    this.collapsedKeys.clear();
+    this.render();
+  }
+
   render() {
     if (!this.items.length) {
       this.activeIndex = -1;
@@ -1354,13 +1402,45 @@ class OutlineManager {
       return;
     }
 
+    const keys = this.headingKeys();
+    const previousScrollTop = this.container.scrollTop;
     const fragment = document.createDocumentFragment();
     const list = document.createElement('ol');
     list.className = 'outline-list';
+    // 当前处于折叠状态的祖先标题层级，用于隐藏其后的子孙条目
+    const collapsedLevels = [];
 
     this.items.forEach((item, index) => {
+      while (collapsedLevels.length && item.level <= collapsedLevels[collapsedLevels.length - 1]) {
+        collapsedLevels.pop();
+      }
+      const hidden = collapsedLevels.length > 0;
+      const hasChildren = this.hasChildren(index);
+      const collapsed = hasChildren && this.collapsedKeys.has(keys[index]);
+
       const entry = document.createElement('li');
       entry.style.setProperty('--level', item.level);
+      entry.hidden = hidden;
+
+      const toggle = document.createElement('button');
+      toggle.type = 'button';
+      toggle.className = 'outline-toggle';
+      if (hasChildren) {
+        toggle.dataset.index = index;
+        toggle.title = collapsed ? '展开子标题' : '折叠子标题';
+        toggle.setAttribute('aria-expanded', String(!collapsed));
+        toggle.innerHTML = `<i data-lucide="${collapsed ? 'chevron-right' : 'chevron-down'}"></i>`;
+        toggle.addEventListener('click', (event) => {
+          event.stopPropagation();
+          this.toggleCollapse(index);
+        });
+      } else {
+        toggle.classList.add('empty');
+        toggle.tabIndex = -1;
+        toggle.setAttribute('aria-hidden', 'true');
+      }
+      entry.append(toggle);
+
       const button = document.createElement('button');
       button.type = 'button';
       button.className = 'outline-item';
@@ -1376,12 +1456,18 @@ class OutlineManager {
       });
       entry.append(button);
       list.append(entry);
+
+      if (collapsed) {
+        collapsedLevels.push(item.level);
+      }
     });
 
     fragment.append(list);
     this.container.replaceChildren(fragment);
     this.activeIndex = -1;
     this.highlightActive(0);
+    this.container.scrollTop = previousScrollTop;
+    renderIcons();
   }
 
   resetScroll() {
@@ -1980,6 +2066,14 @@ class MarkdownStudioApp {
           <aside class="outline-pane" id="outlinePane">
             <div class="panel-header">
               <h2>大纲</h2>
+              <div class="panel-actions">
+                <button id="outlineCollapseAllButton" class="icon-button small" type="button" title="全部折叠">
+                  <i data-lucide="chevrons-down-up"></i>
+                </button>
+                <button id="outlineExpandAllButton" class="icon-button small" type="button" title="全部展开">
+                  <i data-lucide="chevrons-up-down"></i>
+                </button>
+              </div>
             </div>
             <div id="outlineHost" class="outline-host"></div>
           </aside>
@@ -2038,6 +2132,8 @@ class MarkdownStudioApp {
     this.root.querySelector('#saveButton').addEventListener('click', () => this.saveCurrentFile('manual'));
     this.root.querySelector('#newRootFileButton').addEventListener('click', () => this.createInRoot('file'));
     this.root.querySelector('#locateFileButton').addEventListener('click', () => this.revealActiveFile());
+    this.root.querySelector('#outlineCollapseAllButton').addEventListener('click', () => this.outline.collapseAll());
+    this.root.querySelector('#outlineExpandAllButton').addEventListener('click', () => this.outline.expandAll());
 
     const searchInput = this.root.querySelector('#fileSearchInput');
     const clearSearchButton = this.root.querySelector('#clearFileSearchButton');
