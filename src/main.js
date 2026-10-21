@@ -17,6 +17,7 @@ import { Decoration, keymap } from '@codemirror/view';
 import { indentWithTab } from '@codemirror/commands';
 import {
   Bold,
+  Check,
   ChevronDown,
   ChevronRight,
   ChevronsDownUp,
@@ -70,6 +71,7 @@ const MAX_REFRESH_INTERVAL_SECONDS = 60;
 const EMPTY_DOCUMENT = '# Untitled\n\nStart writing Markdown here.\n';
 const studioIcons = {
   Bold,
+  Check,
   ChevronDown,
   ChevronRight,
   ChevronsDownUp,
@@ -1099,6 +1101,15 @@ class PreviewEngine {
         console.warn('Failed to open preview link', href, error);
       });
     });
+
+    this.container.addEventListener('click', (event) => {
+      const button = event.target?.closest?.('.code-block-copy');
+      if (!button) {
+        return;
+      }
+      event.preventDefault();
+      this.copyCodeBlock(button);
+    });
   }
 
   render(markdownSource) {
@@ -1112,9 +1123,63 @@ class PreviewEngine {
 
     this.headingIds.clear();
     this.container.innerHTML = this.md.render(markdownSource);
+    this.decorateCodeBlocks();
     this.resolveImageSources(renderVersion);
     this.resolveMediaLinks(renderVersion);
     this.renderMermaidDiagrams();
+  }
+
+  // 代码块右上角复制按钮：外层包一层 wrapper，让按钮不会随代码横向滚动
+  decorateCodeBlocks() {
+    const blocks = Array.from(this.container.querySelectorAll('pre')).filter(
+      (pre) => !pre.classList.contains('mermaid-source') && !pre.closest('.code-block')
+    );
+    if (!blocks.length) {
+      return;
+    }
+
+    blocks.forEach((pre) => {
+      const wrapper = document.createElement('div');
+      wrapper.className = 'code-block';
+      pre.replaceWith(wrapper);
+      wrapper.appendChild(pre);
+
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'code-block-copy';
+      button.title = '复制代码';
+      button.setAttribute('aria-label', '复制代码');
+      button.innerHTML = '<i data-lucide="copy"></i>';
+      wrapper.appendChild(button);
+    });
+
+    renderIcons();
+  }
+
+  async copyCodeBlock(button) {
+    const code = button.closest('.code-block')?.querySelector('pre')?.textContent ?? '';
+    try {
+      await navigator.clipboard.writeText(code);
+      this.flashCopyButton(button, true);
+    } catch (error) {
+      console.warn('Failed to copy code block', error);
+      this.flashCopyButton(button, false);
+    }
+  }
+
+  flashCopyButton(button, succeeded) {
+    window.clearTimeout(button.copyResetTimer);
+    button.classList.toggle('is-copied', succeeded);
+    button.classList.toggle('is-copy-failed', !succeeded);
+    button.title = succeeded ? '已复制' : '复制失败';
+    button.innerHTML = `<i data-lucide="${succeeded ? 'check' : 'x'}"></i>`;
+    renderIcons();
+    button.copyResetTimer = window.setTimeout(() => {
+      button.classList.remove('is-copied', 'is-copy-failed');
+      button.title = '复制代码';
+      button.innerHTML = '<i data-lucide="copy"></i>';
+      renderIcons();
+    }, 1400);
   }
 
   revokeObjectUrls() {
@@ -1310,9 +1375,16 @@ class PreviewEngine {
 class PlaintextPreviewEngine {
   constructor(container) {
     this.container = container;
+    this.text = '';
+  }
+
+  // TXT 模式下编辑器是空的，纯文本预览才是内容的唯一展示处，复制等操作从这里取
+  getText() {
+    return this.text;
   }
 
   render(text) {
+    this.text = text;
     if (!text.trim()) {
       this.container.innerHTML = '<div class="empty-state compact">预览区暂无内容</div>';
       return;
@@ -2498,9 +2570,8 @@ class MarkdownStudioApp {
     this.currentFileIsTxt = Boolean(node.isTxt);
     this.lastSavedContent = diskContent;
     this.dirty = snapshotContent !== diskContent;
-    this.editor.setContent(snapshotContent);
-    this.preview.render(snapshotContent);
-    this.outline.update(snapshotContent);
+    // 与正常打开文件保持一致：TXT 走纯文本预览，Markdown 走渲染预览
+    this.renderDocumentContent(snapshotContent);
     this.tabs.openFile({ path: node.path, name: node.name, isTxt: node.isTxt });
     this.tabs.updateState(node.path, {
       content: snapshotContent,
@@ -3055,7 +3126,8 @@ class MarkdownStudioApp {
     try {
       let plainText;
       if (this.currentFileIsTxt) {
-        plainText = this.editor.getContent();
+        // 打开 TXT 时编辑器内容会被清空，内容只渲染在纯文本预览里
+        plainText = this.plaintextPreview.getText();
       } else {
         plainText = this.preview.toPlainText(this.editor.getContent());
       }
